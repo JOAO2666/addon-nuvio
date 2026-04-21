@@ -412,7 +412,8 @@ function extractEmbedInfo(pageUrl) {
 
       // Resolve the actual video host URLs using the redirect.php endpoint
       for (var i = 0; i < embeds.length; i++) {
-        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + embeds[i].server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
+        var server = embeds[i].server;
+        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
         try {
           var redResp = yield fetch(redirectUrl, {
             method: "GET",
@@ -424,10 +425,18 @@ function extractEmbedInfo(pageUrl) {
           });
           var loc = redResp.headers.get("location");
           if (loc) {
-            embeds[i].embedUrl = loc;
+            var videoId = loc.split('/').pop().split('?')[0];
+            var canonical = loc;
+            
+            if (server === "filemoon" || server === "byse") canonical = "https://filemoon.sx/e/" + videoId;
+            else if (server === "doodstream" || server === "dood") canonical = "https://dood.li/e/" + videoId;
+            else if (server === "mixdrop") canonical = "https://mixdrop.co/e/" + videoId;
+            else if (server === "streamtape") canonical = "https://streamtape.com/e/" + videoId;
+            
+            embeds[i].embedUrl = canonical;
           }
         } catch(e) {
-          console.log("[RedeCanais] Failed to resolve redirect for " + embeds[i].server);
+          console.log("[RedeCanais] Failed to resolve redirect for " + server);
         }
       }
 
