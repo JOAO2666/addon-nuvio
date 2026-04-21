@@ -4,12 +4,14 @@
  *   - RedeCanais PH
  *   - VideasyBR       (SuperFlix / OverFlix / VisionCine)
  *   - AnimeFire       (animefire.io)
+ *   - AnimesDigital   (animesdigital.org)
  */
 var providers = [
   { label: "RedeCanais (.autos)", mod: require("./providers/redecanais.js")    },
   { label: "RedeCanais PH",       mod: require("./providers/redecanais-ph.js") },
   { label: "VideasyBR",           mod: require("./providers/videasy-br.js")    },
   { label: "AnimeFire",           mod: require("./providers/animefire.js")     },
+  { label: "AnimesDigital",       mod: require("./providers/animesdigital.js") },
 ];
 
 var tests = [

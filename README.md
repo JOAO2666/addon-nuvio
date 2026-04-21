@@ -12,7 +12,7 @@ https://raw.githubusercontent.com/JOAO2666/addon-nuvio/refs/heads/main/manifest.
 
 Depois é só ativar os providers desejados e começar a assistir.
 
-## Providers Incluídos (v3.0.0)
+## Providers Incluídos (v3.1.0)
 
 | Provider | Site / API | Conteúdo | Idioma | Formato | Status |
 |----------|------------|----------|--------|---------|--------|
@@ -20,6 +20,7 @@ Depois é só ativar os providers desejados e começar a assistir.
 | **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ⚠️ Cloudflare |
 | **VideasyBR** | api.videasy.net | Filmes, Séries, Animes | PT-BR | HLS (m3u8) | ✅ |
 | **AnimeFire** | animefire.io | Animes (EP individuais) | PT-BR (Dub/Leg) | MP4 direto | ✅ |
+| **AnimesDigital** | animesdigital.org | Animes, Desenhos, Doramas | PT-BR (Dub/Leg) | HLS direto | ✅ |
 
 ### Detalhes por Provider
 
@@ -31,6 +32,8 @@ Depois é só ativar os providers desejados e começar a assistir.
 
 **AnimeFire** — Catálogo brasileiro de animes. Usa o endpoint JSON público `/video/{slug}/{episode}` do site, que devolve **MP4 direto** do CDN `lightspeedst.net` em 360p / 720p / 1080p. Resolução de slug automática a partir do TMDB (título PT + título original).
 
+**AnimesDigital** — Novo catálogo BR de animes. Extrai **HLS direto** (`cdn-s01.mywallpaper-4k-image.net/…/index.m3u8`) — sem iframe, sem packer. Palpites de slug primeiro (`<nome>-dublado`, `<nome>`), fallback pra busca. Usa **paginação inteligente** pra achar EP alvo direto na página certa mesmo em séries longas (One Piece, Naruto Classic). Só responde pra conteúdo com `original_language=ja`.
+
 ## Cobertura por Tipo
 
 | Tipo                | Melhor Provider                          |
@@ -38,10 +41,24 @@ Depois é só ativar os providers desejados e começar a assistir.
 | Filme Hollywood     | VideasyBR (HLS) + RedeCanais (MP4)       |
 | Filme Nacional      | RedeCanais + VideasyBR                   |
 | Série               | VideasyBR + RedeCanais                   |
-| Anime dublado       | **AnimeFire** + VideasyBR                |
-| Anime filme         | AnimeFire + RedeCanais                   |
+| Anime dublado       | **AnimeFire** + **AnimesDigital** + VideasyBR |
+| Anime filme         | AnimeFire + AnimesDigital + RedeCanais   |
 
-Com os 4 ativos, você costuma ter **3 a 5 streams** diferentes por título, em qualidades variadas.
+Com os 5 ativos, você costuma ter **4 a 8 streams** diferentes por título, em qualidades variadas.
+
+## Sites pedidos mas não adicionados
+
+Sites que foram investigados mas **não são viáveis** (pra não gerar streams quebrados):
+
+| Site | Problema |
+|------|----------|
+| `xfilmetorrenthd.com.br` | Site de **torrent** (`.torrent`/magnet), não tem streaming direto que o Nuvio saiba tocar. |
+| `topflix.online` | Usa "VideoBalancer" privado (`sempra.pro`) que só aceita requests vindas do próprio site — API externa retorna 404. |
+| `bludvplay.xyz` | Dos slots de player na página só vem trailer do YouTube — não tem streams reais públicos. |
+| `assistironlinee.org` | Retorna URLs de **embed** de terceiros (2embed, fembed, embedplayer, superflixapi) — iframes que o Nuvio não toca nativo. |
+| `animesonlinecc.to` | Usa iframe do **Blogger** (`blogger.com/video.g?token=…`) — extração exige chamadas adicionais assinadas, instável. |
+
+Se quiser algum deles, precisa de solução dedicada por site (Cloudflare bypass, extrator de Blogger, etc).
 
 ## Hosts Suportados (RedeCanais)
 
@@ -61,8 +78,9 @@ Addon para o Nuvio/
 │   ├── redecanais.js          # RedeCanais (.autos)
 │   ├── redecanais-ph.js       # RedeCanais (.ph mirror)
 │   ├── videasy-br.js          # api.videasy.net (SuperFlix/OverFlix/VisionCine)
-│   └── animefire.js           # animefire.io (MP4 direto)
-├── test.js                    # Teste local Node.js (4 providers)
+│   ├── animefire.js           # animefire.io (MP4 direto)
+│   └── animesdigital.js       # animesdigital.org (HLS direto + paginação inteligente)
+├── test.js                    # Teste local Node.js (5 providers)
 └── README.md
 ```
 

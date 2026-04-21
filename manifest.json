@@ -1,8 +1,8 @@
 {
   "id": "br.nuvio.streams",
   "name": "Streams Brasil (Multi-Fonte)",
-  "version": "3.0.0",
-  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix/OverFlix/VisionCine HLS) + AnimeFire (MP4 direto). Filmes, séries e animes dublados/legendados.",
+  "version": "3.1.0",
+  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix/OverFlix/VisionCine HLS) + AnimeFire (MP4 direto) + AnimesDigital (HLS direto). Filmes, séries e animes dublados/legendados.",
   "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
   "scrapers": [
     {
@@ -86,6 +86,28 @@
         "mp4"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=animefire.io&sz=128",
+      "contentLanguage": [
+        "pt",
+        "ja"
+      ]
+    },
+    {
+      "id": "animesdigital",
+      "name": "AnimesDigital",
+      "description": "AnimesDigital (animesdigital.org) - catálogo BR de animes com HLS direto (cdn-s01.mywallpaper-4k-image.net). Resolve slug via TMDB + títulos alternativos, calcula a página certa pra achar EP rápido mesmo em séries gigantes (One Piece). Só responde a conteúdo anime (original_language=ja).",
+      "version": "1.0.0",
+      "author": "Nuvio BR",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/animesdigital.js",
+      "enabled": true,
+      "formats": [
+        "m3u8",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=animesdigital.org&sz=128",
       "contentLanguage": [
         "pt",
         "ja"
