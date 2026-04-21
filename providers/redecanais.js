@@ -410,6 +410,27 @@ function extractEmbedInfo(pageUrl) {
       var isCAM = html.indexOf("CAM") !== -1;
       var quality = isCAM ? "CAM" : isHD ? "HD" : "SD";
 
+      // Resolve the actual video host URLs using the redirect.php endpoint
+      for (var i = 0; i < embeds.length; i++) {
+        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + embeds[i].server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
+        try {
+          var redResp = yield fetch(redirectUrl, {
+            method: "GET",
+            redirect: "manual",
+            headers: {
+              "User-Agent": USER_AGENT,
+              "Referer": playerUrl
+            }
+          });
+          var loc = redResp.headers.get("location");
+          if (loc) {
+            embeds[i].embedUrl = loc;
+          }
+        } catch(e) {
+          console.log("[RedeCanais] Failed to resolve redirect for " + embeds[i].server);
+        }
+      }
+
       console.log(
         "[RedeCanais] Found " + embeds.length + " embeds, Quality: " + quality
       );
@@ -645,7 +666,7 @@ function buildStreams(embedInfo, mediaInfo) {
       title: title + " [" + audioLabel + "] [" + qualityLabel + "]",
       url: embed.embedUrl,
       quality: qualityLabel,
-      type: "direct",
+      type: "url",
       headers: {
         Referer: BASE_URL + "/",
         "User-Agent": USER_AGENT,

@@ -221,6 +221,19 @@ function extractEmbedInfo(pageUrl) {
       var isCAM = html.indexOf("CAM") !== -1;
       var isHD = html.indexOf("HD") !== -1;
 
+      for (var i = 0; i < embeds.length; i++) {
+        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + embeds[i].server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
+        try {
+          var redResp = yield fetch(redirectUrl, {
+            method: "GET",
+            redirect: "manual",
+            headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
+          });
+          var loc = redResp.headers.get("location");
+          if (loc) embeds[i].embedUrl = loc;
+        } catch(e) {}
+      }
+
       console.log("[RedeCanais.ph] Found " + embeds.length + " embeds");
       return { embeds: embeds, isDubbed: isDubbed, isLegendado: isLegendado, quality: isCAM ? "CAM" : isHD ? "HD" : "SD" };
     } catch (error) {
@@ -315,7 +328,7 @@ function buildStreams(embedInfo, mediaInfo) {
     streams.push({
       name: "RedeCanais.ph - " + (SERVER_NAMES[embed.server] || embed.server),
       title: title + " [" + audioLabel + "] [" + qualityLabel + "]",
-      url: embed.embedUrl, quality: qualityLabel, type: "direct",
+      url: embed.embedUrl, quality: qualityLabel, type: "url",
       headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT, Origin: BASE_URL },
     });
   }
