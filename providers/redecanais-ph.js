@@ -79,11 +79,20 @@ function getTmdbInfo(tmdbId, mediaType) {
 
     var titlePtBr = mediaType === "tv" ? pt.name : pt.title;
     var titleEn = mediaType === "tv" ? en.name : en.title;
+    var originalTitle = mediaType === "tv" ? en.original_name : en.original_title;
     var year = mediaType === "tv"
       ? (pt.first_air_date ? pt.first_air_date.substring(0, 4) : "")
       : (pt.release_date ? pt.release_date.substring(0, 4) : "");
+    var seasons = [];
+    if (mediaType === "tv" && en.seasons) {
+      for (var i = 0; i < en.seasons.length; i++) {
+        var s = en.seasons[i];
+        if (s && s.season_number > 0) seasons.push({ season: s.season_number, count: s.episode_count || 0 });
+      }
+      seasons.sort(function (a, b) { return a.season - b.season; });
+    }
     console.log("[" + PROVIDER_TAG + "] TMDB: \"" + titlePtBr + "\" (" + year + ")");
-    return { titlePtBr: titlePtBr, titleEn: titleEn, year: year };
+    return { titlePtBr: titlePtBr, titleEn: titleEn, originalTitle: originalTitle, year: year, seasons: seasons };
   });
 }
 
@@ -315,62 +324,200 @@ function extractDirectFromHost(server, embedUrl) {
   });
 }
 
+var MOVIE_SUFFIX_RE_PH =
+  /(^|-)(o-filme|filme-\d+|a-reuniao|reuniao|especial|uma-historia-de|lenda-do-lobo|a-origem|a-era-de-ouro|a-lenda-da|confronto-ninja|lacos|herdeiros-da|o-caminho-ninja|ascensao|missao|mundial-de-herois|pos-covid|entrando-no|nao-recomendado|guerras-do-streaming|o-fim-da|maior-melhor|panderverso|para-sempre|iluminando-um|l-change|o-ultimo-nome|o-primeiro-nome|yo-o-retorno|sereias-das|os-ratos|a-ultima-aventura|bastidores|agora-e-a-sua|vigilantes|3d2y|contagem-regressiva|amizade-de-ferias|amigos-sorridentes|0-o-filme)(-|$)/;
+
+function parseSiteUrlPh(url) {
+  var m = url.match(/\/assistir-(.+?)-(dublado|legendado)-(\d{4})-(\d+)\/?$/i);
+  if (m) return { kind: "series", slug: m[1], lang: m[2].toLowerCase(), year: m[3], id: parseInt(m[4]) };
+  m = url.match(/\/assistir-(.+?)-(\d+)x(\d+)-(dublado|legendado)-(\d+)\/?$/i);
+  if (m) return { kind: "episode", slug: m[1], season: parseInt(m[2]), episode: parseInt(m[3]), lang: m[4].toLowerCase(), id: parseInt(m[5]) };
+  m = url.match(/\/assistir-(.+?)-(dublado|legendado)-(\d+)\/?$/i);
+  if (m) return { kind: "series", slug: m[1], lang: m[2].toLowerCase(), year: "", id: parseInt(m[3]) };
+  return null;
+}
+
+function normPh(s) { return s ? s.toLowerCase().replace(/[^a-z0-9]/g, "") : ""; }
+
+function scoreCandidatePh(urlSlug, targetSlugs, urlYear, targetYear) {
+  var best = 0, bestIdx = -1;
+  var u = normPh(urlSlug);
+  for (var i = 0; i < targetSlugs.length; i++) {
+    var t = normPh(targetSlugs[i]);
+    if (!t) continue;
+    var s = 0;
+    if (u === t) s = 100;
+    else if (u.indexOf(t) === 0) s = 70;
+    else if (u.indexOf(t) !== -1) s = 30;
+    if (s > best) { best = s; bestIdx = i; }
+  }
+  if (best === 0) return -999;
+  if (targetYear && urlYear) {
+    var diff = Math.abs(parseInt(urlYear) - parseInt(targetYear));
+    if (diff === 0) best += 40;
+    else if (diff === 1) best += 15;
+    else if (diff <= 3) best += 5;
+    else best -= 15;
+  }
+  var residue = urlSlug.toLowerCase();
+  if (bestIdx >= 0 && targetSlugs[bestIdx]) {
+    var tgt = targetSlugs[bestIdx].toLowerCase();
+    if (residue.indexOf(tgt) === 0) residue = residue.substring(tgt.length);
+  }
+  if (MOVIE_SUFFIX_RE_PH.test(residue)) best -= 60;
+  return best;
+}
+
+function validateEpisodeUrlPh(url, expectedSlug, s, e) {
+  return __async(this, null, function* () {
+    try {
+      var r = yield httpGet(url);
+      if (!r || !r.ok) return false;
+      var html = yield r.text();
+      if (!html) return false;
+      var titleMatch = html.match(/<title>([^<]+)</i);
+      if (!titleMatch) return false;
+      var title = titleMatch[1].toLowerCase();
+      if (title.indexOf(s + "x" + e) === -1) return false;
+      var parts = expectedSlug.toLowerCase().split("-");
+      var firstToken = "";
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].length >= 3 && parts[i] !== "the") { firstToken = parts[i]; break; }
+      }
+      if (firstToken && title.indexOf(firstToken) === -1) return false;
+      return true;
+    } catch (_) { return false; }
+  });
+}
+
+function predictEpisodeUrlPh(baseSlug, baseId, baseS, baseE, lang, seasons, targetS, targetE) {
+  if (!seasons || seasons.length === 0) return null;
+  if (targetS === baseS && targetE === baseE) return null;
+  var offset = 0;
+  if (targetS === baseS) {
+    offset = targetE - baseE;
+  } else if (targetS > baseS) {
+    var baseInfo = null;
+    for (var i = 0; i < seasons.length; i++) if (seasons[i].season === baseS) { baseInfo = seasons[i]; break; }
+    if (!baseInfo || !baseInfo.count) return null;
+    offset = baseInfo.count - baseE;
+    for (var s = baseS + 1; s < targetS; s++) {
+      var info = null;
+      for (var i = 0; i < seasons.length; i++) if (seasons[i].season === s) { info = seasons[i]; break; }
+      if (!info || !info.count) return null;
+      offset += info.count;
+    }
+    offset += targetE;
+  } else { return null; }
+  return BASE_URL + "/assistir-" + baseSlug + "-" + targetS + "x" + targetE + "-" + lang + "-" + (baseId + offset) + "/";
+}
+
+function gatherCandidatesPh(tmdb) {
+  return __async(this, null, function* () {
+    var queries = [];
+    var seenQ = {};
+    function q(v) { if (v && !seenQ[v.toLowerCase()]) { seenQ[v.toLowerCase()] = 1; queries.push(v); } }
+    q(tmdb.titlePtBr); q(tmdb.titleEn); q(tmdb.originalTitle);
+    var targetSlugs = [], seenSlug = {};
+    function addS(v) { var s = generateSlug(v); if (s && !seenSlug[s]) { seenSlug[s] = 1; targetSlugs.push(s); } }
+    addS(tmdb.titlePtBr); addS(tmdb.titleEn); addS(tmdb.originalTitle);
+    var all = [], seen = {};
+    for (var qi = 0; qi < queries.length; qi++) {
+      var res = yield searchSite(queries[qi]);
+      for (var i = 0; i < res.length; i++) if (!seen[res[i]]) { seen[res[i]] = 1; all.push(res[i]); }
+    }
+    return { urls: all, targetSlugs: targetSlugs };
+  });
+}
+
 function findMoviePage(tmdb) {
   return __async(this, null, function* () {
-    var titles = [];
-    if (tmdb.titlePtBr) titles.push(tmdb.titlePtBr);
-    if (tmdb.titleEn && tmdb.titleEn !== tmdb.titlePtBr) titles.push(tmdb.titleEn);
-    for (var t = 0; t < titles.length; t++) {
-      var slug = generateSlug(titles[t]);
-      var results = yield searchSite(titles[t]);
-      var movies = [];
-      for (var i = 0; i < results.length; i++) {
-        if (!/\d+x\d+/.test(results[i].toLowerCase())) movies.push(results[i]);
-      }
-      for (var i = 0; i < movies.length; i++) {
-        var u = movies[i].toLowerCase();
-        if (u.indexOf(slug) !== -1 && tmdb.year && u.indexOf(tmdb.year) !== -1) return movies[i];
-      }
-      for (var i = 0; i < movies.length; i++) {
-        if (movies[i].toLowerCase().indexOf(slug) !== -1) return movies[i];
-      }
-      if (movies.length > 0) return movies[0];
+    var g = yield gatherCandidatesPh(tmdb);
+    var candidates = [];
+    for (var i = 0; i < g.urls.length; i++) {
+      var p = parseSiteUrlPh(g.urls[i]);
+      if (!p || p.kind !== "series") continue;
+      var sc = scoreCandidatePh(p.slug, g.targetSlugs, p.year, tmdb.year);
+      if (sc > 0) candidates.push({ url: g.urls[i], score: sc, lang: p.lang });
     }
-    return null;
+    candidates.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.lang === "dublado" && b.lang !== "dublado") return -1;
+      if (b.lang === "dublado" && a.lang !== "dublado") return 1;
+      return 0;
+    });
+    return candidates.length ? candidates[0].url : null;
   });
 }
 
 function findEpisodePage(tmdb, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    var titles = [];
-    if (tmdb.titlePtBr) titles.push(tmdb.titlePtBr);
-    if (tmdb.titleEn && tmdb.titleEn !== tmdb.titlePtBr) titles.push(tmdb.titleEn);
-    for (var t = 0; t < titles.length; t++) {
-      var slug = generateSlug(titles[t]);
-      var results = yield searchSite(titles[t]);
-      var seriesPages = [], episodePages = [];
-      for (var i = 0; i < results.length; i++) {
-        if (/\d+x\d+/.test(results[i].toLowerCase())) episodePages.push(results[i]);
-        else seriesPages.push(results[i]);
+    seasonNum = parseInt(seasonNum);
+    episodeNum = parseInt(episodeNum);
+    var g = yield gatherCandidatesPh(tmdb);
+
+    for (var i = 0; i < g.urls.length; i++) {
+      var p = parseSiteUrlPh(g.urls[i]);
+      if (!p || p.kind !== "episode") continue;
+      if (p.season !== seasonNum || p.episode !== episodeNum) continue;
+      var sc = scoreCandidatePh(p.slug, g.targetSlugs, "", "");
+      if (sc >= 30) return g.urls[i];
+    }
+
+    var candidates = [];
+    for (var i = 0; i < g.urls.length; i++) {
+      var p2 = parseSiteUrlPh(g.urls[i]);
+      if (!p2 || p2.kind !== "series") continue;
+      var sc2 = scoreCandidatePh(p2.slug, g.targetSlugs, p2.year, tmdb.year);
+      if (sc2 > 0) candidates.push({ url: g.urls[i], slug: p2.slug, id: p2.id, lang: p2.lang, score: sc2 });
+    }
+    candidates.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.lang === "dublado" && b.lang !== "dublado") return -1;
+      if (b.lang === "dublado" && a.lang !== "dublado") return 1;
+      return 0;
+    });
+
+    var topN = Math.min(3, candidates.length);
+    for (var ci = 0; ci < topN; ci++) {
+      var cand = candidates[ci];
+      var episodes = yield getEpisodeLinks(cand.url);
+      var key = seasonNum + "x" + episodeNum;
+      if (episodes[key]) return episodes[key].url;
+
+      var baseEp = null;
+      var keys = Object.keys(episodes);
+      for (var k = 0; k < keys.length; k++) {
+        if (episodes[keys[k]].season === 1) { baseEp = episodes[keys[k]]; break; }
       }
-      for (var i = 0; i < episodePages.length; i++) {
-        var se = episodePages[i].toLowerCase().match(/-(\d+)x(\d+)-/);
-        if (se && parseInt(se[1]) === parseInt(seasonNum) && parseInt(se[2]) === parseInt(episodeNum)) {
-          return episodePages[i];
-        }
+      if (!baseEp && keys.length > 0) baseEp = episodes[keys[0]];
+      if (!baseEp) continue;
+      var bp = parseSiteUrlPh(baseEp.url);
+      if (!bp || bp.kind !== "episode") continue;
+
+      var predicted = predictEpisodeUrlPh(bp.slug, bp.id, bp.season, bp.episode, bp.lang, tmdb.seasons, seasonNum, episodeNum);
+      if (!predicted) continue;
+
+      var pm = predicted.match(/-(\d+)\/?$/);
+      if (!pm) continue;
+      var pid = parseInt(pm[1]);
+      var ids = [pid, pid + 1, pid - 1, pid + 2, pid - 2, pid + 3, pid - 3];
+      var tasks = ids.map(function (cid) {
+        var u = predicted.replace(/-\d+\/?$/, "-" + cid + "/");
+        return (function () {
+          return __async(null, null, function* () {
+            var ok = yield validateEpisodeUrlPh(u, bp.slug, seasonNum, episodeNum);
+            return ok ? { url: u, delta: cid - pid } : null;
+          });
+        })();
+      });
+      var results = yield Promise.all(tasks);
+      var best = null;
+      for (var ri = 0; ri < results.length; ri++) {
+        var r = results[ri]; if (!r) continue;
+        if (!best || Math.abs(r.delta) < Math.abs(best.delta)) best = r;
       }
-      var seriesUrl = null;
-      for (var i = 0; i < seriesPages.length; i++) {
-        if (seriesPages[i].toLowerCase().indexOf(slug) !== -1) { seriesUrl = seriesPages[i]; break; }
-      }
-      if (!seriesUrl && seriesPages.length > 0) seriesUrl = seriesPages[0];
-      if (seriesUrl) {
-        var episodes = yield getEpisodeLinks(seriesUrl);
-        var key = parseInt(seasonNum) + "x" + parseInt(episodeNum);
-        if (episodes[key]) return episodes[key].url;
-        var pad = parseInt(seasonNum) + "x" + (parseInt(episodeNum) < 10 ? "0" + parseInt(episodeNum) : parseInt(episodeNum));
-        if (episodes[pad]) return episodes[pad].url;
-      }
+      if (best) return best.url;
     }
     return null;
   });

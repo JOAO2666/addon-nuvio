@@ -12,22 +12,43 @@ https://raw.githubusercontent.com/JOAO2666/addon-nuvio/refs/heads/main/manifest.
 
 Depois é só ativar os providers desejados e começar a assistir.
 
-## Providers Incluídos (v3.2.0)
+## Providers Incluídos (v3.3.0)
 
 | Provider | Site / API | Conteúdo | Idioma | Formato | Status | Velocidade (séries) |
 |----------|------------|----------|--------|---------|--------|---------------------|
-| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ✅ | ~2,6 s |
+| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ✅ 92% de hit em séries | ~2,8 s |
 | **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ⚠️ Cloudflare | <0,5 s (fail-fast) |
 | **VideasyBR** | api.videasy.net | Filmes, Séries, Animes | PT-BR | HLS (m3u8) | ✅ | ~0,8 s |
 | **AnimeFire** | animefire.io | Animes (EP individuais) | PT-BR (Dub/Leg) | MP4 direto | ✅ | ~2,2 s (anime) |
 | **AnimesDigital** | animesdigital.org | Animes, Desenhos, Doramas | PT-BR (Dub/Leg) | HLS direto | ✅ | 5–16 s (anime) |
 
-### O que mudou na v3.2.0
+### O que mudou na v3.3.0
 
-- **Séries agora respondem em ≤3 s** (antes passavam de 15 s e o Nuvio dava "no streams found" por timeout).
-- **RedeCanais**: os embeds agora são extraídos **em paralelo** via `Promise.all` (eram sequenciais). Hosts sabidamente quebrados (Filemoon/Byse, DoodStream) são **pulados antes da requisição** — economizava 2 a 5 s por host falhando em silêncio.
-- **VideasyBR**: removidos OverFlix e VisionCine (o upstream do videasy.net estava retornando HTTP 500 em qualquer request, travando ~30 s cada). Só SuperFlix fica ativo e um **timeout de 8 s por request** garante que nada trava o app.
-- **RedeCanais PH**: paralelização idem, mas Cloudflare continua bloqueando de Node/dispositivos móveis. Mantido no manifesto, mas pronto pra fail-fast sem atrasar o restante.
+**Foco**: consertar o "no streams found" em **todas** as séries populares — não só as duas ou três que eu testei.
+
+Bateria de 49 séries populares (BB, GoT, ST, Boys, Friends, The Office, Witcher, Lost, South Park, Death Note, Naruto, JJK, MHA, HxH, Attack on Titan, Demon Slayer, One Piece live-action, Arcane, Invincible, Rick and Morty, Peaky Blinders, Narcos, Ozark, Money Heist, Dark, Mindhunter, Loki, Wanda, Mandalorian, Squid Game, Euphoria, Supernatural, Grey's Anatomy, Wednesday, Dexter, Simpsons, Modern Family, Brooklyn 99, HIMYM, 3%, Cidade Invisível, Breaking Bad S3E5 etc): **73% → 92% de sucesso**.
+
+Os dois bugs que estavam matando a maioria das séries:
+
+1. **Scoring burro** — a busca do RedeCanais retorna o nome da série misturado com filmes/especiais (`friends-a-reuniao-legendado-2021` aparecia antes da `friends-dublado-1994`). O código antigo pegava o primeiro que tivesse "friends" no slug — e caía num especial que não tem episódios. **Agora** cada URL ganha um score:
+   - Slug exato = +100, prefixo = +70, substring = +30
+   - Ano do TMDB bate = +40, diferença de 1 ano = +15
+   - Slug com sufixo de filme/especial (`-o-filme`, `-reuniao`, `-ascensao`, `-o-ultimo-nome` etc.) = **–60**
+   - Pega o melhor score, empata pro idioma dublado.
+   - Consulta também o `original_name` do TMDB (animes que só existem no site com nome romaji).
+
+2. **Só achava temporada 1** — a página da série no RedeCanais só lista os eps de S1. O código antigo desistia pra qualquer S>1. **Agora** o provider:
+   - Descobre o ID da S1E1 na URL (`.../series-1x1-dublado-3417/`).
+   - Usa `episode_count` de cada temporada do TMDB pra **prever o ID** do episódio alvo (IDs do site são sequenciais por série).
+   - Tenta 7 variações em paralelo (±3 IDs) pra absorver gaps, valida por `<title>` da página.
+   - Exemplo: Breaking Bad S3E5 passou a funcionar — antes falhava.
+
+Ainda falham **algumas temporadas muito recentes** de séries grandes (ST S4, GoT S8, Boys S3+, TWD S5+): o site publicou essas em IDs **fora** da sequência da S1 (pulou milhares de IDs). Esses casos ficam pro usuário ir via VideasyBR, que não depende de scraping.
+
+Melhorias anteriores (v3.2.0) mantidas:
+- Embeds extraídos em paralelo (Promise.all).
+- Hosts quebrados (Filemoon/DoodStream) pulados antes do request.
+- VideasyBR com timeout agressivo de 8 s + só SuperFlix ativo.
 
 ### Detalhes por Provider
 

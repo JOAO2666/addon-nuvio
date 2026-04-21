@@ -84,7 +84,7 @@ function fetchText(url, opts) {
 }
 
 // ─────────────────────────────────────────────
-// TMDB helper (PT-BR + EN)
+// TMDB helper (PT-BR + EN + seasons for TV)
 // ─────────────────────────────────────────────
 function getTmdbInfo(tmdbId, mediaType) {
   return __async(this, null, function* () {
@@ -101,12 +101,32 @@ function getTmdbInfo(tmdbId, mediaType) {
 
     var titlePtBr = mediaType === "tv" ? ptData.name : ptData.title;
     var titleEn = mediaType === "tv" ? enData.name : enData.title;
+    var originalTitle = mediaType === "tv" ? enData.original_name : enData.original_title;
     var year = mediaType === "tv"
       ? (ptData.first_air_date ? ptData.first_air_date.substring(0, 4) : "")
       : (ptData.release_date ? ptData.release_date.substring(0, 4) : "");
 
-    console.log("[" + PROVIDER_TAG + "] TMDB: \"" + titlePtBr + "\" / \"" + titleEn + "\" (" + year + ")");
-    return { titlePtBr: titlePtBr, titleEn: titleEn, year: year };
+    // Season metadata (needed to predict episode URLs for seasons > 1)
+    var seasons = [];
+    if (mediaType === "tv" && enData.seasons) {
+      for (var i = 0; i < enData.seasons.length; i++) {
+        var s = enData.seasons[i];
+        if (s && s.season_number > 0) {
+          seasons.push({ season: s.season_number, count: s.episode_count || 0 });
+        }
+      }
+      seasons.sort(function (a, b) { return a.season - b.season; });
+    }
+
+    console.log("[" + PROVIDER_TAG + "] TMDB: \"" + titlePtBr + "\" / \"" + titleEn + "\" (" + year + ")" +
+      (seasons.length ? " seasons=[" + seasons.map(function (x) { return "S" + x.season + ":" + x.count; }).join(",") + "]" : ""));
+    return {
+      titlePtBr: titlePtBr,
+      titleEn: titleEn,
+      originalTitle: originalTitle,
+      year: year,
+      seasons: seasons,
+    };
   });
 }
 
@@ -452,33 +472,176 @@ function extractDirectFromHost(server, embedUrl) {
 }
 
 // ─────────────────────────────────────────────
+// URL parsing + candidate scoring
+// ─────────────────────────────────────────────
+// Words/patterns that indicate a movie/special/spin-off and NOT the main series.
+// Keep this focused on common BR-indexing patterns seen on the site.
+var MOVIE_SUFFIX_RE =
+  /(^|-)(o-filme|filme-\d+|a-reuniao|reuniao|especial|uma-historia-de|lenda-do-lobo|a-origem|a-era-de-ouro|a-lenda-da|confronto-ninja|lacos|herdeiros-da|o-caminho-ninja|ascensao|missao|mundial-de-herois|pos-covid|entrando-no|nao-recomendado|guerras-do-streaming|o-fim-da|maior-melhor|panderverso|para-sempre|iluminando-um|l-change|o-ultimo-nome|o-primeiro-nome|yo-o-retorno|sereias-das|os-ratos|a-ultima-aventura|bastidores|agora-e-a-sua|vigilantes|3d2y|contagem-regressiva|amizade-de-ferias|amigos-sorridentes|0-o-filme)(-|$)/;
+
+// Extract info from a RedeCanais URL (series or episode).
+function parseSiteUrl(url) {
+  var m = url.match(/\/assistir-(.+?)-(dublado|legendado)-(\d{4})-(\d+)\/?$/i);
+  if (m) return { kind: "series", slug: m[1], lang: m[2].toLowerCase(), year: m[3], id: parseInt(m[4]) };
+  m = url.match(/\/assistir-(.+?)-(\d+)x(\d+)-(dublado|legendado)-(\d+)\/?$/i);
+  if (m) return {
+    kind: "episode", slug: m[1],
+    season: parseInt(m[2]), episode: parseInt(m[3]),
+    lang: m[4].toLowerCase(), id: parseInt(m[5]),
+  };
+  m = url.match(/\/assistir-(.+?)-(dublado|legendado)-(\d+)\/?$/i);
+  if (m) return { kind: "series", slug: m[1], lang: m[2].toLowerCase(), year: "", id: parseInt(m[3]) };
+  return null;
+}
+
+function norm(s) { return s ? s.toLowerCase().replace(/[^a-z0-9]/g, "") : ""; }
+
+function scoreSeriesCandidate(urlSlug, targetSlugs, urlYear, targetYear) {
+  var best = 0, bestTargetIdx = -1;
+  var u = norm(urlSlug);
+  for (var i = 0; i < targetSlugs.length; i++) {
+    var t = norm(targetSlugs[i]);
+    if (!t) continue;
+    var s = 0;
+    if (u === t) s = 100;
+    else if (u.indexOf(t) === 0) s = 70;
+    else if (u.indexOf(t) !== -1) s = 30;
+    if (s > best) { best = s; bestTargetIdx = i; }
+  }
+  if (best === 0) return -999;
+
+  if (targetYear && urlYear) {
+    var diff = Math.abs(parseInt(urlYear) - parseInt(targetYear));
+    if (diff === 0) best += 40;
+    else if (diff === 1) best += 15;
+    else if (diff <= 3) best += 5;
+    else best -= 15;
+  }
+
+  var residue = urlSlug.toLowerCase();
+  if (bestTargetIdx >= 0 && targetSlugs[bestTargetIdx]) {
+    var tgt = targetSlugs[bestTargetIdx].toLowerCase();
+    if (residue.indexOf(tgt) === 0) residue = residue.substring(tgt.length);
+  }
+  if (MOVIE_SUFFIX_RE.test(residue)) best -= 60;
+
+  // Slight bonus for dublado (most users prefer it, and dublado playlists usually more complete)
+  // Neutral-ish; scoring stays deterministic.
+  return best;
+}
+
+// Validate a guessed episode URL: status 200, has the target SxE in title, and title mentions the series name.
+function validateEpisodeUrl(url, expectedSlug, s, e) {
+  return __async(this, null, function* () {
+    try {
+      var r = yield httpGet(url);
+      if (!r || !r.ok) return false;
+      var html = yield r.text();
+      if (!html) return false;
+      var titleMatch = html.match(/<title>([^<]+)</i);
+      if (!titleMatch) return false;
+      var title = titleMatch[1].toLowerCase();
+      if (title.indexOf(s + "x" + e) === -1) return false;
+      // Title must mention the first meaningful token of the slug
+      // so we don't accept an accidental match for another series.
+      var parts = expectedSlug.toLowerCase().split("-");
+      var firstToken = "";
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].length >= 3 && parts[i] !== "the") { firstToken = parts[i]; break; }
+      }
+      if (firstToken && title.indexOf(firstToken) === -1) return false;
+      return true;
+    } catch (_) { return false; }
+  });
+}
+
+// Predict the URL of a specific episode by extrapolating from a known episode.
+// Uses TMDB season counts + sequential site IDs (confirmed pattern for most series).
+function predictEpisodeUrl(baseSlug, baseId, baseS, baseE, lang, seasons, targetS, targetE) {
+  if (!seasons || seasons.length === 0) return null;
+  if (targetS === baseS && targetE === baseE) return null;
+
+  var offset = 0;
+  if (targetS === baseS) {
+    offset = targetE - baseE;
+  } else if (targetS > baseS) {
+    var baseInfo = null;
+    for (var i = 0; i < seasons.length; i++) if (seasons[i].season === baseS) { baseInfo = seasons[i]; break; }
+    if (!baseInfo || !baseInfo.count) return null;
+    offset = baseInfo.count - baseE;
+    for (var s = baseS + 1; s < targetS; s++) {
+      var info = null;
+      for (var i = 0; i < seasons.length; i++) if (seasons[i].season === s) { info = seasons[i]; break; }
+      if (!info || !info.count) return null;
+      offset += info.count;
+    }
+    offset += targetE;
+  } else {
+    return null;
+  }
+
+  var predictedId = baseId + offset;
+  return BASE_URL + "/assistir-" + baseSlug + "-" + targetS + "x" + targetE + "-" + lang + "-" + predictedId + "/";
+}
+
+// ─────────────────────────────────────────────
+// Gather + score candidates from several search queries
+// ─────────────────────────────────────────────
+function gatherCandidates(tmdbInfo) {
+  return __async(this, null, function* () {
+    var queries = [];
+    var addedQ = {};
+    function pushQ(q) { if (q && !addedQ[q.toLowerCase()]) { addedQ[q.toLowerCase()] = 1; queries.push(q); } }
+    pushQ(tmdbInfo.titlePtBr);
+    pushQ(tmdbInfo.titleEn);
+    pushQ(tmdbInfo.originalTitle);
+
+    var targetSlugs = [];
+    var seenSlug = {};
+    function pushSlug(v) { var s = generateSlug(v); if (s && !seenSlug[s]) { seenSlug[s] = 1; targetSlugs.push(s); } }
+    pushSlug(tmdbInfo.titlePtBr);
+    pushSlug(tmdbInfo.titleEn);
+    pushSlug(tmdbInfo.originalTitle);
+
+    var all = [];
+    var seenUrl = {};
+    for (var qi = 0; qi < queries.length; qi++) {
+      var res = yield searchSite(queries[qi]);
+      for (var i = 0; i < res.length; i++) {
+        if (!seenUrl[res[i]]) { seenUrl[res[i]] = 1; all.push(res[i]); }
+      }
+    }
+    return { urls: all, targetSlugs: targetSlugs };
+  });
+}
+
+// ─────────────────────────────────────────────
 // Find movie content page
 // ─────────────────────────────────────────────
 function findMoviePage(tmdbInfo) {
   return __async(this, null, function* () {
-    var titles = [];
-    if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
+    var gathered = yield gatherCandidates(tmdbInfo);
+    var all = gathered.urls, targetSlugs = gathered.targetSlugs;
 
-    for (var t = 0; t < titles.length; t++) {
-      var slug = generateSlug(titles[t]);
-      var results = yield searchSite(titles[t]);
-      if (results.length === 0) continue;
-
-      var movies = [];
-      for (var i = 0; i < results.length; i++) {
-        if (!/\d+x\d+/.test(results[i].toLowerCase())) movies.push(results[i]);
-      }
-      for (var i = 0; i < movies.length; i++) {
-        var u = movies[i].toLowerCase();
-        if (u.indexOf(slug) !== -1 && tmdbInfo.year && u.indexOf(tmdbInfo.year) !== -1) return movies[i];
-      }
-      for (var i = 0; i < movies.length; i++) {
-        if (movies[i].toLowerCase().indexOf(slug) !== -1) return movies[i];
-      }
-      if (movies.length > 0) return movies[0];
+    var candidates = [];
+    for (var i = 0; i < all.length; i++) {
+      var parsed = parseSiteUrl(all[i]);
+      if (!parsed || parsed.kind !== "series") continue;
+      var sc = scoreSeriesCandidate(parsed.slug, targetSlugs, parsed.year, tmdbInfo.year);
+      if (sc > 0) candidates.push({ url: all[i], score: sc, lang: parsed.lang });
     }
-    return null;
+    candidates.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.lang === "dublado" && b.lang !== "dublado") return -1;
+      if (b.lang === "dublado" && a.lang !== "dublado") return 1;
+      return 0;
+    });
+    if (candidates.length === 0) {
+      console.log("[" + PROVIDER_TAG + "] no movie candidates");
+      return null;
+    }
+    console.log("[" + PROVIDER_TAG + "] movie pick (score=" + candidates[0].score + "): " + candidates[0].url);
+    return candidates[0].url;
   });
 }
 
@@ -487,45 +650,111 @@ function findMoviePage(tmdbInfo) {
 // ─────────────────────────────────────────────
 function findEpisodePage(tmdbInfo, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    var titles = [];
-    if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
+    seasonNum = parseInt(seasonNum);
+    episodeNum = parseInt(episodeNum);
+    var gathered = yield gatherCandidates(tmdbInfo);
+    var all = gathered.urls, targetSlugs = gathered.targetSlugs;
 
-    for (var t = 0; t < titles.length; t++) {
-      var slug = generateSlug(titles[t]);
-      var results = yield searchSite(titles[t]);
-      if (results.length === 0) continue;
-
-      var seriesPages = [];
-      var episodePages = [];
-      for (var i = 0; i < results.length; i++) {
-        if (/\d+x\d+/.test(results[i].toLowerCase())) episodePages.push(results[i]);
-        else seriesPages.push(results[i]);
-      }
-
-      for (var i = 0; i < episodePages.length; i++) {
-        var se = episodePages[i].toLowerCase().match(/-(\d+)x(\d+)-/);
-        if (se && parseInt(se[1]) === parseInt(seasonNum) && parseInt(se[2]) === parseInt(episodeNum)) {
-          return episodePages[i];
-        }
-      }
-
-      var seriesUrl = null;
-      for (var i = 0; i < seriesPages.length; i++) {
-        if (seriesPages[i].toLowerCase().indexOf(slug) !== -1) { seriesUrl = seriesPages[i]; break; }
-      }
-      if (!seriesUrl && seriesPages.length > 0) seriesUrl = seriesPages[0];
-
-      if (seriesUrl) {
-        var episodes = yield getEpisodeLinks(seriesUrl);
-        var key = parseInt(seasonNum) + "x" + parseInt(episodeNum);
-        if (episodes[key]) return episodes[key].url;
-
-        // Try zero padded
-        var pad = parseInt(seasonNum) + "x" + (parseInt(episodeNum) < 10 ? "0" + parseInt(episodeNum) : parseInt(episodeNum));
-        if (episodes[pad]) return episodes[pad].url;
+    // 1) Direct episode match in search results. This happens when the target
+    //    episode was recently added and the site surfaces it in search.
+    for (var i = 0; i < all.length; i++) {
+      var p = parseSiteUrl(all[i]);
+      if (!p || p.kind !== "episode") continue;
+      if (p.season !== seasonNum || p.episode !== episodeNum) continue;
+      // Ensure slug belongs to our target series
+      var sc = scoreSeriesCandidate(p.slug, targetSlugs, "", "");
+      if (sc >= 30) {
+        console.log("[" + PROVIDER_TAG + "] direct episode hit: " + all[i]);
+        return all[i];
       }
     }
+
+    // 2) Score series candidates (the main series page listing episodes).
+    var candidates = [];
+    for (var i = 0; i < all.length; i++) {
+      var p2 = parseSiteUrl(all[i]);
+      if (!p2 || p2.kind !== "series") continue;
+      var sc2 = scoreSeriesCandidate(p2.slug, targetSlugs, p2.year, tmdbInfo.year);
+      if (sc2 > 0) candidates.push({
+        url: all[i], slug: p2.slug, year: p2.year, id: p2.id, lang: p2.lang, score: sc2,
+      });
+    }
+    candidates.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.lang === "dublado" && b.lang !== "dublado") return -1;
+      if (b.lang === "dublado" && a.lang !== "dublado") return 1;
+      return 0;
+    });
+    if (candidates.length === 0) {
+      console.log("[" + PROVIDER_TAG + "] no series candidates");
+      return null;
+    }
+    console.log("[" + PROVIDER_TAG + "] series candidates: " +
+      candidates.slice(0, 3).map(function (c) { return c.score + ":" + c.url; }).join(" | "));
+
+    // 3) For each top candidate, try to find the target episode:
+    //    a) load series page → get listed episodes (usually season 1)
+    //    b) predict URL using TMDB season counts + sequential IDs → validate
+    //    c) if prediction fails with a small offset, try nearby IDs (±5)
+    var topN = Math.min(3, candidates.length);
+    for (var ci = 0; ci < topN; ci++) {
+      var cand = candidates[ci];
+      var episodes = yield getEpisodeLinks(cand.url);
+      var key = seasonNum + "x" + episodeNum;
+      if (episodes[key]) return episodes[key].url;
+
+      // Find a known episode on this series to use as the "base" for prediction.
+      // Prefer an episode from season 1 (most reliable).
+      var baseEp = null;
+      var epKeys = Object.keys(episodes);
+      for (var k = 0; k < epKeys.length; k++) {
+        var info = episodes[epKeys[k]];
+        if (info.season === 1) { baseEp = info; break; }
+      }
+      if (!baseEp && epKeys.length > 0) baseEp = episodes[epKeys[0]];
+      if (!baseEp) continue; // series page with no episode links at all
+
+      // Use candidate slug (e.g. "breaking-bad-a-quimica-do-mal") from the episode URL.
+      var baseParsed = parseSiteUrl(baseEp.url);
+      if (!baseParsed || baseParsed.kind !== "episode") continue;
+
+      var predicted = predictEpisodeUrl(
+        baseParsed.slug, baseParsed.id,
+        baseParsed.season, baseParsed.episode,
+        baseParsed.lang,
+        tmdbInfo.seasons,
+        seasonNum, episodeNum
+      );
+      if (!predicted) continue;
+
+      // Try predicted + ±3 around it IN PARALLEL — keeps latency bounded.
+      var pm = predicted.match(/-(\d+)\/?$/);
+      if (!pm) continue;
+      var pid = parseInt(pm[1]);
+      var idsToTry = [pid, pid + 1, pid - 1, pid + 2, pid - 2, pid + 3, pid - 3];
+      var parallel = idsToTry.map(function (candidateId) {
+        var u = predicted.replace(/-\d+\/?$/, "-" + candidateId + "/");
+        return (function () {
+          return __async(null, null, function* () {
+            var ok = yield validateEpisodeUrl(u, baseParsed.slug, seasonNum, episodeNum);
+            return ok ? { url: u, delta: candidateId - pid } : null;
+          });
+        })();
+      });
+      var results = yield Promise.all(parallel);
+      // Prefer lowest |delta|
+      var best = null;
+      for (var ri = 0; ri < results.length; ri++) {
+        var r = results[ri];
+        if (!r) continue;
+        if (!best || Math.abs(r.delta) < Math.abs(best.delta)) best = r;
+      }
+      if (best) {
+        console.log("[" + PROVIDER_TAG + "] predicted episode OK (Δ=" + best.delta + "): " + best.url);
+        return best.url;
+      }
+    }
+
     return null;
   });
 }

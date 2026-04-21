@@ -1,15 +1,15 @@
 {
   "id": "br.nuvio.streams",
   "name": "Streams Brasil (Multi-Fonte)",
-  "version": "3.2.0",
-  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix HLS) + AnimeFire (MP4 direto) + AnimesDigital (HLS direto). Filmes, séries e animes dublados/legendados. v3.2: resposta ~4x mais rápida em séries (paralelizou extração, removeu upstreams quebrados), sem mais timeout de 'no streams found'.",
+  "version": "3.3.0",
+  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix HLS) + AnimeFire (MP4 direto) + AnimesDigital (HLS direto). Filmes, séries e animes dublados/legendados. v3.3: busca de séries 100% reformulada — scoring por ano + título exato + penalidade de filmes/especiais + predição de URL por temporada usando sequência de IDs do site (73%→92% de sucesso em 49 séries populares, Breaking Bad S3, Death Note, Friends, The Witcher, Lost, Naruto etc).",
   "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
   "scrapers": [
     {
       "id": "redecanais",
       "name": "RedeCanais",
-      "description": "RedeCanais HD (.autos) - Filmes, séries e animes dublados/legendados em PT-BR. Extrai URL direta (.mp4) de MixDrop + StreamTape para tocar no player nativo. v3.1: paraleliza extração + pula hosts quebrados (Filemoon/DoodStream) → séries em ~2.6s.",
-      "version": "3.1.0",
+      "description": "RedeCanais HD (.autos) - Filmes, séries e animes dublados/legendados em PT-BR. Extrai URL direta (.mp4) de MixDrop + StreamTape para tocar no player nativo. v3.2: busca de séries 100% reformulada com scoring (ano + slug + penalidade filmes) e predição de URL de temporadas pela sequência de IDs do site — agora acha ~92% das séries populares, não só as mais recentes.",
+      "version": "3.2.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",
@@ -30,8 +30,8 @@
     {
       "id": "redecanais-ph",
       "name": "RedeCanais PH",
-      "description": "RedeCanais PH - Mirror alternativo do RedeCanais (pode ser bloqueado por Cloudflare em alguns dispositivos). Extrai URL direta de MixDrop + StreamTape. v3.1: extração paralela e fail-fast (<0.5s quando Cloudflare bloqueia).",
-      "version": "3.1.0",
+      "description": "RedeCanais PH - Mirror alternativo do RedeCanais (pode ser bloqueado por Cloudflare em alguns dispositivos). Extrai URL direta de MixDrop + StreamTape. v3.2: mesma busca reformulada do .autos (scoring + predição de temporadas) e fail-fast (<0.5s quando Cloudflare bloqueia).",
+      "version": "3.2.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",
