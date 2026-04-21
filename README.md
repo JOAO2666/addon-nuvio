@@ -1,81 +1,98 @@
-# 🇧🇷 RedeCanais Brasil - Addon para Nuvio
+# RedeCanais Brasil - Addon para Nuvio
 
-Addon de providers para o app **Nuvio** que busca filmes e séries dublados/legendados em PT-BR a partir dos sites **RedeCanais**.
+Addon de providers para o app **Nuvio** que busca filmes, séries e animes dublados/legendados em PT-BR a partir dos sites **RedeCanais**.
 
-## 📦 Providers Incluídos
+Diferente de outros providers, este **resolve as URLs diretas dos hosts** (MixDrop, StreamTape) em vez de retornar apenas as páginas embed — isso evita o erro "source player" / "player não suportado" que acontece quando o Nuvio tenta tocar uma página HTML como vídeo.
+
+## Instalação no Nuvio
+
+No app Nuvio, vá em **Settings → Plugins → Add Repository** e cole:
+
+```
+https://raw.githubusercontent.com/JOAO2666/addon-nuvio/refs/heads/main/manifest.json
+```
+
+Depois ative os providers desejados e já pode usar.
+
+## Providers Incluídos
 
 | Provider | Site | Conteúdo | Idioma |
 |----------|------|----------|--------|
-| **RedeCanais** | redecanaistv.autos | Filmes, Séries | PT-BR (Dub/Leg) |
-| **RedeCanais PH** | redecanais.ph | Filmes, Séries | PT-BR (Dub/Leg) |
+| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) |
+| **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) |
 
-## 🚀 Como Instalar no Nuvio
+> Obs.: o mirror `.ph` é protegido por Cloudflare. Em alguns dispositivos/IPs ele pode retornar 403. Se acontecer, desative o mirror e use apenas o principal.
 
-1. Abra o **Nuvio** → **Settings** → **Plugins**
-2. Cole a URL do seu repositório (se hospedar no GitHub):
-   ```
-   https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/refs/heads/main/manifest.json
-   ```
-3. Atualize e ative os providers que desejar
+## Hosts Suportados (extração direta)
 
-### Teste Local
+O addon busca no RedeCanais, pega os embeds disponíveis e tenta extrair a **URL direta de vídeo** de cada host:
 
-Se quiser testar localmente:
+| Host | Status | Saída |
+|------|--------|-------|
+| **MixDrop** | ✅ Funciona | `.mp4` direto (`mxcontent.net`) |
+| **StreamTape** | ✅ Funciona | `.mp4` direto (`tapecontent.net`) |
+| **DoodStream** | ⚠️ Pode falhar | `.mp4` via `/pass_md5` (Cloudflare) |
+| **Filemoon / Byse** | ⚠️ SPA moderno | Página SPA Vite, extração não confiável |
 
-1. Clone/copie este repositório
-2. Rode `npm start` (requer `server.js` do template oficial)
-3. No Nuvio → Settings → Developer → Plugin Tester
-4. Insira: `http://SEU_IP:3000/manifest.json`
+Na prática **MixDrop + StreamTape** já entregam pelo menos 2 streams playáveis para cada filme/episódio — suficiente para o Nuvio.
 
-## 🎬 Funcionalidades
+## Como Funciona
 
-- **Busca automática** via TMDB API (traduz título para PT-BR)
-- **Múltiplos servidores** de streaming:
-  - 🎯 Filemoon (Byse)
-  - 🎯 DoodStream
-  - 🎯 MixDrop
-  - 🎯 StreamTape
-- **Suporte a filmes e séries** (movies + tv)
-- **Detecção de qualidade** (HD, CAM, SD)
-- **Detecção de áudio** (Dublado, Legendado)
-- **Fallback inteligente**: Busca por título PT-BR primeiro, depois EN
+```
+Nuvio → getStreams(tmdbId, "movie"|"tv", season?, episode?)
+   ↓
+Provider consulta TMDB (pt-BR + en-US) para obter título e ano
+   ↓
+Busca /pesquisar/?p=TITULO no RedeCanais
+   ↓
+Filme  → pega a URL correta do filme
+Serie  → pega página da série, lista episódios, acha SxE
+   ↓
+Fetch /?area=online → regex em getembed.php / redirect.php / C_Video()
+   ↓
+Resolve cada redirect.php → URL canônica do host
+   ↓
+Para cada host, executa o extractor dedicado:
+  - MixDrop : GET /e/, unpack p,a,c,k,e,d, lê MDCore.wurl
+  - StreamTape : GET /e/, lê robotlink e monta a URL
+  - DoodStream : GET /e/, acha /pass_md5/, fetch, monta URL
+   ↓
+Retorna streams com URL direta + headers (Referer/Origin)
+```
 
-## 📁 Estrutura do Projeto
+## Estrutura
 
 ```
 Addon para o Nuvio/
-├── manifest.json          # Registro dos providers
+├── manifest.json           # Registro dos providers
 ├── providers/
-│   ├── redecanais.js      # Provider principal (redecanaistv.autos)
-│   └── redecanais-ph.js   # Provider mirror (redecanais.ph)
-├── test.js                # Script de teste
+│   ├── redecanais.js       # Provider principal (redecanaistv.autos)
+│   └── redecanais-ph.js    # Provider mirror (redecanais.ph)
+├── test.js                 # Teste local Node.js
 └── README.md
 ```
 
-## 🧪 Testando
+## Testando localmente
 
 ```bash
 node test.js
 ```
 
-O script testa busca de um filme (Oppenheimer) e uma série (Breaking Bad).
+Saída esperada: `passed=5 failed=0` para `RedeCanais (.autos)` (MixDrop + StreamTape retornando URLs diretas de `.mp4`).
 
-## 🔧 Como Funciona
+Para testar dentro do Nuvio (Plugin Tester), use um servidor local (`npm start` do repo `nuvio-providers`) ou publique no GitHub e cole a URL raw do `manifest.json`.
 
-1. **Recebe TMDB ID** do Nuvio (ex: `872585` para Oppenheimer)
-2. **Consulta TMDB API** para obter o título em PT-BR
-3. **Busca no RedeCanais** usando o título traduzido
-4. **Acessa a página do player** (`?area=online`)
-5. **Extrai links dos servidores** (filemoon, doodstream, mixdrop, streamtape)
-6. **Retorna streams formatados** para o Nuvio reproduzir
+## Compatibilidade Hermes
 
-## ⚠️ Aviso Legal
+Os providers são **single-file em ES5** com `async/await` transpilado manualmente para generator + helper `__async`, exatamente como o Hermes/React-Native exige. Sem dependências externas.
+
+## Aviso Legal
 
 - Este repositório **não hospeda** nenhum conteúdo
 - Os providers apenas indexam conteúdo publicamente disponível em sites de terceiros
-- O uso é de total responsabilidade do usuário
+- O uso é de responsabilidade do usuário
 - Para questões DMCA, contate os hosts reais do conteúdo
 
-## 📄 Licença
+## Licença
 
 GPL-3.0

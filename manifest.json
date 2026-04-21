@@ -1,15 +1,15 @@
 {
   "id": "br.nuvio.redecanais",
   "name": "RedeCanais Brasil",
-  "version": "1.0.0",
-  "description": "Filmes, séries e animes dublados/legendados do RedeCanais.",
+  "version": "2.0.0",
+  "description": "Filmes, séries e animes dublados/legendados do RedeCanais com extração de URL direta (MixDrop + StreamTape).",
   "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
   "scrapers": [
     {
       "id": "redecanais",
       "name": "RedeCanais",
-      "description": "RedeCanais HD - Filmes e Séries Dublados e Legendados em PT-BR com múltiplos servidores (Filemoon, MixDrop, StreamTape, DoodStream)",
-      "version": "1.0.0",
+      "description": "RedeCanais HD - Filmes, Séries e Animes dublados/legendados em PT-BR. Extrai URL direta (.mp4) de MixDrop + StreamTape para tocar sem erro no player nativo do Nuvio.",
+      "version": "2.0.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",
@@ -30,8 +30,8 @@
     {
       "id": "redecanais-ph",
       "name": "RedeCanais PH",
-      "description": "RedeCanais PH - Mirror alternativo com filmes e séries dublados e legendados em PT-BR",
-      "version": "1.0.0",
+      "description": "RedeCanais PH - Mirror alternativo (pode ser bloqueado por Cloudflare em alguns dispositivos). Extrai URL direta de MixDrop + StreamTape.",
+      "version": "2.0.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",

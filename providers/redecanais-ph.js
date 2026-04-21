@@ -1,8 +1,10 @@
 /**
  * RedeCanais PH - Nuvio Provider (Mirror)
- * Scrapes movies, TV series, and anime from redecanais.ph
- * Supports: Filemoon (Byse), DoodStream, MixDrop, StreamTape
- * Content Language: Portuguese (BR) - Dubbed & Subtitled
+ * Scrapes movies, TV series and anime from redecanais.ph
+ * Returns DIRECT video URLs (m3u8 / mp4) resolving the embed pages
+ * so the Nuvio native player can play them.
+ *
+ * Hermes compatible (generator based, no async/await syntax at top level).
  */
 "use strict";
 
@@ -10,97 +12,78 @@ var TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706";
 var BASE_URL = "https://redecanais.ph";
 var USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+var PROVIDER_TAG = "RedeCanais.ph";
 
 var SERVER_NAMES = {
-  filemoon: "Byse",
+  filemoon: "Filemoon",
+  byse: "Filemoon",
   doodstream: "DoodStream",
+  dood: "DoodStream",
   mixdrop: "MixDrop",
   streamtape: "StreamTape",
 };
 
 var __async = function (__this, __arguments, generator) {
   return new Promise(function (resolve, reject) {
-    var fulfilled = function (value) {
-      try { step(generator.next(value)); } catch (e) { reject(e); }
-    };
-    var rejected = function (value) {
-      try { step(generator.throw(value)); } catch (e) { reject(e); }
-    };
+    var fulfilled = function (v) { try { step(generator.next(v)); } catch (e) { reject(e); } };
+    var rejected  = function (v) { try { step(generator.throw(v)); } catch (e) { reject(e); } };
     var step = function (x) {
-      return x.done
-        ? resolve(x.value)
-        : Promise.resolve(x.value).then(fulfilled, rejected);
+      return x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected);
     };
     step((generator = generator.apply(__this, __arguments)).next());
   });
 };
 
-function makeRequest(url, options) {
-  if (!options) options = {};
+function httpGet(url, opts) {
+  if (!opts) opts = {};
   return __async(this, null, function* () {
     var headers = Object.assign(
       {
         "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        Connection: "keep-alive",
       },
-      options.headers || {}
+      opts.headers || {}
     );
+    return yield fetch(url, {
+      method: opts.method || "GET",
+      headers: headers,
+      redirect: opts.redirect || "follow",
+    });
+  });
+}
+
+function fetchText(url, opts) {
+  return __async(this, null, function* () {
     try {
-      var response = yield fetch(url, {
-        method: options.method || "GET",
-        headers: headers,
-        redirect: options.redirect || "follow",
-      });
-      if (!response.ok) {
-        throw new Error("HTTP " + response.status + ": " + response.statusText);
-      }
-      return response;
-    } catch (error) {
-      console.error("[RedeCanais.ph] Request failed: " + error.message);
-      throw error;
+      var r = yield httpGet(url, opts);
+      return yield r.text();
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] fetchText failed: " + url);
+      return "";
     }
   });
 }
 
 function getTmdbInfo(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    var endpoint = mediaType === "tv" ? "tv" : "movie";
-    var url = "https://api.themoviedb.org/3/" + endpoint + "/" + tmdbId +
-      "?api_key=" + TMDB_API_KEY + "&language=pt-BR";
-    var response = yield makeRequest(url, { headers: { Accept: "application/json" } });
-    var data = yield response.json();
-    var titlePtBr = mediaType === "tv" ? data.name : data.title;
+    var ep = mediaType === "tv" ? "tv" : "movie";
+    var ptResp = yield httpGet("https://api.themoviedb.org/3/" + ep + "/" + tmdbId +
+      "?api_key=" + TMDB_API_KEY + "&language=pt-BR",
+      { headers: { Accept: "application/json" } });
+    var pt = yield ptResp.json();
+    var enResp = yield httpGet("https://api.themoviedb.org/3/" + ep + "/" + tmdbId +
+      "?api_key=" + TMDB_API_KEY + "&language=en-US",
+      { headers: { Accept: "application/json" } });
+    var en = yield enResp.json();
 
-    var urlEn = "https://api.themoviedb.org/3/" + endpoint + "/" + tmdbId +
-      "?api_key=" + TMDB_API_KEY + "&language=en-US";
-    var responseEn = yield makeRequest(urlEn, { headers: { Accept: "application/json" } });
-    var dataEn = yield responseEn.json();
-    var titleEn = mediaType === "tv" ? dataEn.name : dataEn.title;
-
+    var titlePtBr = mediaType === "tv" ? pt.name : pt.title;
+    var titleEn = mediaType === "tv" ? en.name : en.title;
     var year = mediaType === "tv"
-      ? (data.first_air_date ? data.first_air_date.substring(0, 4) : "")
-      : (data.release_date ? data.release_date.substring(0, 4) : "");
-
-    var imdbId = data.imdb_id || (dataEn ? dataEn.imdb_id : null);
-    if (!imdbId && mediaType === "tv") {
-      try {
-        var extUrl = "https://api.themoviedb.org/3/tv/" + tmdbId +
-          "/external_ids?api_key=" + TMDB_API_KEY;
-        var extResp = yield makeRequest(extUrl, { headers: { Accept: "application/json" } });
-        var extData = yield extResp.json();
-        imdbId = extData.imdb_id;
-      } catch (e) {}
-    }
-
-    console.log('[RedeCanais.ph] TMDB: "' + titlePtBr + '" / "' + titleEn +
-      '" (' + year + ") IMDB: " + imdbId);
-
-    return {
-      titlePtBr: titlePtBr, titleEn: titleEn, year: year,
-      imdbId: imdbId, data: data, totalSeasons: data.number_of_seasons || 0,
-    };
+      ? (pt.first_air_date ? pt.first_air_date.substring(0, 4) : "")
+      : (pt.release_date ? pt.release_date.substring(0, 4) : "");
+    console.log("[" + PROVIDER_TAG + "] TMDB: \"" + titlePtBr + "\" (" + year + ")");
+    return { titlePtBr: titlePtBr, titleEn: titleEn, year: year };
   });
 }
 
@@ -113,171 +96,236 @@ function generateSlug(title) {
     .replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
-function searchRedeCanais(query) {
+function searchSite(query) {
   return __async(this, null, function* () {
-    console.log('[RedeCanais.ph] Searching for: "' + query + '"');
-    var searchUrl = BASE_URL + "/pesquisar/?p=" + encodeURIComponent(query);
-    try {
-      var response = yield makeRequest(searchUrl);
-      var html = yield response.text();
-      var results = [];
-      var linkRegex = /href=['"]([^'"]*\/assistir-[^'"]+)['"]/gi;
-      var match;
-      while ((match = linkRegex.exec(html)) !== null) {
-        var url = match[1].replace(/&amp;/g, "&");
-        if (url.charAt(0) === "/") url = BASE_URL + url;
-        if (url.indexOf("/assistir/") !== -1) continue;
-        if (/\/assistir-[^/]+-\d+\/?$/.test(url)) {
-          if (results.indexOf(url) === -1) results.push(url);
-        }
-      }
-      console.log("[RedeCanais.ph] Found " + results.length + " results");
-      return results;
-    } catch (error) {
-      console.error("[RedeCanais.ph] Search failed: " + error.message);
-      return [];
+    var url = BASE_URL + "/pesquisar/?p=" + encodeURIComponent(query);
+    var html = yield fetchText(url);
+    var results = [];
+    var re = /href=['"]([^'"]*\/assistir-[^'"]+)['"]/gi;
+    var m;
+    while ((m = re.exec(html)) !== null) {
+      var u = m[1].replace(/&amp;/g, "&");
+      if (u.charAt(0) === "/") u = BASE_URL + u;
+      if (u.indexOf("/assistir/") !== -1) continue;
+      if (/\/assistir-[^/]+-\d+\/?$/.test(u) && results.indexOf(u) === -1) results.push(u);
     }
+    return results;
   });
 }
 
-function getEpisodeLinks(seriesPageUrl) {
+function getEpisodeLinks(seriesUrl) {
   return __async(this, null, function* () {
-    try {
-      var response = yield makeRequest(seriesPageUrl);
-      var html = yield response.text();
-      var episodes = {};
-      var linkRegex = /href=['"]([^'"]*\/assistir-[^'"]*-\d+x\d+-[^'"]+)['"]/gi;
-      var match;
-      while ((match = linkRegex.exec(html)) !== null) {
-        var url = match[1].replace(/&amp;/g, "&");
-        if (url.charAt(0) === "/") url = BASE_URL + url;
-        var seMatch = url.match(/-(\d+)x(\d+)-/i);
-        if (seMatch) {
-          var key = parseInt(seMatch[1]) + "x" + parseInt(seMatch[2]);
-          if (!episodes[key]) {
-            episodes[key] = { season: parseInt(seMatch[1]), episode: parseInt(seMatch[2]), url: url };
-          }
-        }
+    var html = yield fetchText(seriesUrl);
+    var episodes = {};
+    var re = /href=['"]([^'"]*\/assistir-[^'"]*-\d+x\d+-[^'"]+)['"]/gi;
+    var m;
+    while ((m = re.exec(html)) !== null) {
+      var u = m[1].replace(/&amp;/g, "&");
+      if (u.charAt(0) === "/") u = BASE_URL + u;
+      var se = u.match(/-(\d+)x(\d+)-/i);
+      if (se) {
+        var key = parseInt(se[1]) + "x" + parseInt(se[2]);
+        if (!episodes[key]) episodes[key] = { url: u, season: parseInt(se[1]), episode: parseInt(se[2]) };
       }
-      console.log("[RedeCanais.ph] Found " + Object.keys(episodes).length + " episodes");
-      return episodes;
-    } catch (error) {
-      return {};
     }
+    return episodes;
   });
 }
 
-function extractEmbedInfo(pageUrl) {
+function extractEmbeds(pageUrl) {
   return __async(this, null, function* () {
     var playerUrl = pageUrl.replace(/\/$/, "") + "/?area=online";
-    try {
-      var response = yield makeRequest(playerUrl);
-      var html = yield response.text();
-      var embeds = [];
+    var html = yield fetchText(playerUrl);
+    var embeds = [];
 
-      var redirectRegex = /\/e\/redirect\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
-      var match;
-      while ((match = redirectRegex.exec(html)) !== null) {
-        embeds.push({
-          server: match[1], contentId: match[2], token: match[3],
-          embedUrl: BASE_URL + "/e/getembed.php?sv=" + match[1] + "&id=" + match[2] + "&token=" + match[3],
-        });
-      }
-
-      var embedRegex = /getembed\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
-      while ((match = embedRegex.exec(html)) !== null) {
-        var exists = false;
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].server === match[1] && embeds[i].contentId === match[2]) { exists = true; break; }
-        }
-        if (!exists) {
-          embeds.push({
-            server: match[1], contentId: match[2], token: match[3],
-            embedUrl: BASE_URL + "/e/getembed.php?sv=" + match[1] + "&id=" + match[2] + "&token=" + match[3],
-          });
-        }
-      }
-
-      var cVideoRegex = /C_Video\s*\(\s*['"](\d+)['"],\s*['"]([^'"]+)['"]\)/gi;
-      while ((match = cVideoRegex.exec(html)) !== null) {
-        var tokenForId = "";
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].contentId === match[1]) { tokenForId = embeds[i].token; break; }
-        }
-        var exists = false;
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].server === match[2] && embeds[i].contentId === match[1]) { exists = true; break; }
-        }
-        if (!exists && tokenForId) {
-          embeds.push({
-            server: match[2], contentId: match[1], token: tokenForId,
-            embedUrl: BASE_URL + "/e/getembed.php?sv=" + match[2] + "&id=" + match[1] + "&token=" + tokenForId,
-          });
-        }
-      }
-
-      var isDubbed = html.indexOf("Dublado") !== -1 || html.indexOf("DUB") !== -1;
-      var isLegendado = html.indexOf("Legendado") !== -1 || html.indexOf("LEG") !== -1;
-      var isCAM = html.indexOf("CAM") !== -1;
-      var isHD = html.indexOf("HD") !== -1;
-
+    function add(srv, id, tok) {
       for (var i = 0; i < embeds.length; i++) {
-        var server = embeds[i].server;
-        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
-        try {
-          var redResp = yield fetch(redirectUrl, {
-            method: "GET",
-            redirect: "manual",
-            headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
-          });
-          var loc = redResp.headers.get("location");
-          if (loc) {
-            var videoId = loc.split('/').pop().split('?')[0];
-            var canonical = loc;
-            
-            if (server === "filemoon" || server === "byse") canonical = "https://filemoon.sx/e/" + videoId;
-            else if (server === "doodstream" || server === "dood") canonical = "https://dood.li/e/" + videoId;
-            else if (server === "mixdrop") canonical = "https://mixdrop.co/e/" + videoId;
-            else if (server === "streamtape") canonical = "https://streamtape.com/e/" + videoId;
-            
-            embeds[i].embedUrl = canonical;
-          }
-        } catch(e) {}
+        if (embeds[i].server === srv && embeds[i].contentId === id) return;
       }
-
-      console.log("[RedeCanais.ph] Found " + embeds.length + " embeds");
-      return { embeds: embeds, isDubbed: isDubbed, isLegendado: isLegendado, quality: isCAM ? "CAM" : isHD ? "HD" : "SD" };
-    } catch (error) {
-      return { embeds: [], quality: "Unknown" };
+      embeds.push({
+        server: srv, contentId: id, token: tok,
+        redirectUrl: BASE_URL + "/e/redirect.php?sv=" + srv + "&id=" + id + "&token=" + tok,
+      });
     }
+
+    var re1 = /\/e\/redirect\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
+    var m;
+    while ((m = re1.exec(html)) !== null) add(m[1], m[2], m[3]);
+
+    var re2 = /getembed\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
+    while ((m = re2.exec(html)) !== null) add(m[1], m[2], m[3]);
+
+    var re3 = /C_Video\s*\(\s*['"](\d+)['"]\s*,\s*['"]([^'"]+)['"]\)/gi;
+    while ((m = re3.exec(html)) !== null) {
+      var id = m[1], srv = m[2], tok = "";
+      for (var i = 0; i < embeds.length; i++) {
+        if (embeds[i].contentId === id) { tok = embeds[i].token; break; }
+      }
+      if (tok) add(srv, id, tok);
+    }
+
+    var isDubbed = /Dublado|DUB\b/i.test(html);
+    var isLegendado = /Legendado|LEG\b/i.test(html);
+    var qualityMatch = html.match(/\b(4k|2160p|1080p|720p|480p|CAM|HD|SD)\b/i);
+    var quality = qualityMatch ? qualityMatch[1].toUpperCase() : "HD";
+
+    return { playerUrl: playerUrl, embeds: embeds, isDubbed: isDubbed, isLegendado: isLegendado, quality: quality };
   });
 }
 
-function findMoviePage(tmdbInfo) {
+function resolveRedirect(embed, playerUrl) {
+  return __async(this, null, function* () {
+    try {
+      var r = yield fetch(embed.redirectUrl, {
+        method: "GET", redirect: "manual",
+        headers: { "User-Agent": USER_AGENT, Referer: playerUrl },
+      });
+      var loc = r.headers.get("location") || r.headers.get("Location");
+      if (!loc && r.url && r.url !== embed.redirectUrl) loc = r.url;
+      return loc || null;
+    } catch (e) { return null; }
+  });
+}
+
+// ═════════════════════════════════════════════
+// Host extractors (return direct m3u8/mp4 URL)
+// ═════════════════════════════════════════════
+
+function unpack(source) {
+  var re = /\}\s*\('([^]+?)'\s*,\s*(\d+|\[\])\s*,\s*(\d+)\s*,\s*'([^]+?)'\.split\('\|'\)/;
+  var m = source.match(re);
+  if (!m) return source;
+  var payload = m[1];
+  var radix = parseInt(m[2]); if (isNaN(radix)) radix = 62;
+  var count = parseInt(m[3]);
+  var symtab = m[4].split("|");
+  if (count === 0) count = symtab.length;
+  function enc(c) {
+    return (c < radix ? "" : enc(Math.floor(c / radix))) +
+      ((c = c % radix) > 35 ? String.fromCharCode(c + 29) : c.toString(36));
+  }
+  while (count--) {
+    if (symtab[count]) {
+      try { payload = payload.replace(new RegExp("\\b" + enc(count) + "\\b", "g"), symtab[count]); }
+      catch (e) {}
+    }
+  }
+  return payload;
+}
+
+function extractFilemoon(embedUrl) {
+  return __async(this, null, function* () {
+    var html = yield fetchText(embedUrl, { headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT } });
+    if (!html) return null;
+    var p = html.match(/eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?\}\('([\s\S]+?)',\s*\d+,\s*\d+,\s*'[\s\S]+?'\.split\('\|'\)[^)]*\)\)/);
+    if (!p) {
+      var direct = html.match(/file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+      return direct ? direct[1] : null;
+    }
+    var u = unpack(p[0]);
+    var m = u.match(/file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/) ||
+            u.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["']([^"']+)["']/) ||
+            u.match(/src\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+    return m ? m[1] : null;
+  });
+}
+
+function extractMixDrop(embedUrl) {
+  return __async(this, null, function* () {
+    var workingUrl = embedUrl
+      .replace(/mixdrop\.co/i, "mixdrop.ag")
+      .replace(/mixdrop\.to/i, "mixdrop.ag")
+      .replace(/\/f\/([a-zA-Z0-9]+)/, "/e/$1");
+    var html = yield fetchText(workingUrl, { headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT } });
+    if (!html) return null;
+    var p = html.match(/eval\(function\(p,a,c,k,e,d\)[^]*?\}\([^]*?\.split\('\|'\)[^)]*\)\)/);
+    if (!p) return null;
+    var u = unpack(p[0]);
+    var m = u.match(/MDCore\.wurl\s*=\s*["']([^"']+)["']/) || u.match(/wurl\s*=\s*["']([^"']+)["']/);
+    if (!m) return null;
+    var url = m[1].trim();
+    if (url.indexOf("//") === 0) url = "https:" + url;
+    return url;
+  });
+}
+
+function extractStreamTape(embedUrl) {
+  return __async(this, null, function* () {
+    var html = yield fetchText(embedUrl, { headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT } });
+    if (!html) return null;
+    var m = html.match(/robotlink['"]\)\.innerHTML\s*=\s*["']([^"']+)["']\s*\+\s*\(['"]([^'"]+)['"]\)/);
+    if (!m) return null;
+    var url = m[1] + m[2].substring(3);
+    if (url.indexOf("//") === 0) url = "https:" + url;
+    return url;
+  });
+}
+
+function extractDoodStream(embedUrl) {
+  return __async(this, null, function* () {
+    var html = yield fetchText(embedUrl, { headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT } });
+    if (!html) return null;
+
+    var pm = html.match(/\$\.get\s*\(\s*['"]([^'"]*\/pass_md5\/[^'"]+)['"]/) ||
+             html.match(/['"]([^'"]*\/pass_md5\/[^'"]+)['"]/);
+    if (!pm) return null;
+
+    var passPath = pm[1];
+    var origin = embedUrl.match(/^(https?:\/\/[^\/]+)/);
+    if (!origin) return null;
+    var passUrl = passPath.indexOf("http") === 0 ? passPath : origin[1] + passPath;
+
+    var tokenMatch = passPath.match(/\/pass_md5\/[^/]+\/([^/?]+)/) || passPath.match(/\/pass_md5\/([^/?]+)/);
+    var token = tokenMatch ? tokenMatch[tokenMatch.length - 1] : "";
+
+    try {
+      var r = yield fetch(passUrl, { headers: { Referer: embedUrl, "User-Agent": USER_AGENT } });
+      var text = yield r.text();
+      if (!text || text.indexOf("http") !== 0) return null;
+      var rand = "", chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      for (var i = 0; i < 10; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+      return text + rand + "?token=" + token + "&expiry=" + Date.now();
+    } catch (e) { return null; }
+  });
+}
+
+function extractDirectFromHost(server, embedUrl) {
+  return __async(this, null, function* () {
+    var s = (server || "").toLowerCase();
+    if (s === "filemoon" || s === "byse" || embedUrl.indexOf("filemoon") !== -1 || embedUrl.indexOf("byse") !== -1) {
+      return yield extractFilemoon(embedUrl);
+    }
+    if (s === "mixdrop" || embedUrl.indexOf("mixdrop") !== -1 || embedUrl.indexOf("mdbekjwqa") !== -1 || embedUrl.indexOf("md3b0j6hj") !== -1) {
+      return yield extractMixDrop(embedUrl);
+    }
+    if (s === "streamtape" || embedUrl.indexOf("streamtape") !== -1) {
+      return yield extractStreamTape(embedUrl);
+    }
+    if (s === "doodstream" || s === "dood" || /dood(?:\.|stream|s\.)/i.test(embedUrl)) {
+      return yield extractDoodStream(embedUrl);
+    }
+    return yield extractFilemoon(embedUrl);
+  });
+}
+
+function findMoviePage(tmdb) {
   return __async(this, null, function* () {
     var titles = [];
-    if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
-
+    if (tmdb.titlePtBr) titles.push(tmdb.titlePtBr);
+    if (tmdb.titleEn && tmdb.titleEn !== tmdb.titlePtBr) titles.push(tmdb.titleEn);
     for (var t = 0; t < titles.length; t++) {
       var slug = generateSlug(titles[t]);
-      var results = yield searchRedeCanais(titles[t]);
-      if (results.length === 0) continue;
-
+      var results = yield searchSite(titles[t]);
       var movies = [];
       for (var i = 0; i < results.length; i++) {
         if (!/\d+x\d+/.test(results[i].toLowerCase())) movies.push(results[i]);
       }
-
       for (var i = 0; i < movies.length; i++) {
         var u = movies[i].toLowerCase();
-        if (u.indexOf(slug) !== -1 && tmdbInfo.year && u.indexOf(tmdbInfo.year) !== -1) return movies[i];
+        if (u.indexOf(slug) !== -1 && tmdb.year && u.indexOf(tmdb.year) !== -1) return movies[i];
       }
       for (var i = 0; i < movies.length; i++) {
         if (movies[i].toLowerCase().indexOf(slug) !== -1) return movies[i];
-      }
-      for (var i = 0; i < movies.length; i++) {
-        if (tmdbInfo.year && movies[i].toLowerCase().indexOf(tmdbInfo.year) !== -1) return movies[i];
       }
       if (movies.length > 0) return movies[0];
     }
@@ -285,97 +333,108 @@ function findMoviePage(tmdbInfo) {
   });
 }
 
-function findEpisodePage(tmdbInfo, seasonNum, episodeNum) {
+function findEpisodePage(tmdb, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     var titles = [];
-    if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
-
+    if (tmdb.titlePtBr) titles.push(tmdb.titlePtBr);
+    if (tmdb.titleEn && tmdb.titleEn !== tmdb.titlePtBr) titles.push(tmdb.titleEn);
     for (var t = 0; t < titles.length; t++) {
       var slug = generateSlug(titles[t]);
-      var results = yield searchRedeCanais(titles[t]);
-      if (results.length === 0) continue;
-
-      var seriesPages = [];
-      var episodePages = [];
+      var results = yield searchSite(titles[t]);
+      var seriesPages = [], episodePages = [];
       for (var i = 0; i < results.length; i++) {
         if (/\d+x\d+/.test(results[i].toLowerCase())) episodePages.push(results[i]);
         else seriesPages.push(results[i]);
       }
-
       for (var i = 0; i < episodePages.length; i++) {
-        var seMatch = episodePages[i].toLowerCase().match(/-(\d+)x(\d+)-/);
-        if (seMatch && parseInt(seMatch[1]) === parseInt(seasonNum) && parseInt(seMatch[2]) === parseInt(episodeNum)) {
+        var se = episodePages[i].toLowerCase().match(/-(\d+)x(\d+)-/);
+        if (se && parseInt(se[1]) === parseInt(seasonNum) && parseInt(se[2]) === parseInt(episodeNum)) {
           return episodePages[i];
         }
       }
-
       var seriesUrl = null;
       for (var i = 0; i < seriesPages.length; i++) {
         if (seriesPages[i].toLowerCase().indexOf(slug) !== -1) { seriesUrl = seriesPages[i]; break; }
       }
       if (!seriesUrl && seriesPages.length > 0) seriesUrl = seriesPages[0];
-
       if (seriesUrl) {
         var episodes = yield getEpisodeLinks(seriesUrl);
         var key = parseInt(seasonNum) + "x" + parseInt(episodeNum);
         if (episodes[key]) return episodes[key].url;
+        var pad = parseInt(seasonNum) + "x" + (parseInt(episodeNum) < 10 ? "0" + parseInt(episodeNum) : parseInt(episodeNum));
+        if (episodes[pad]) return episodes[pad].url;
       }
     }
     return null;
   });
 }
 
-function buildStreams(embedInfo, mediaInfo) {
-  var streams = [];
-  var audioLabel = embedInfo.isDubbed ? "Dublado" : embedInfo.isLegendado ? "Legendado" : "PT-BR";
-  var qualityLabel = embedInfo.quality || "HD";
-  var title = mediaInfo.mediaType === "tv" && mediaInfo.season && mediaInfo.episode
-    ? mediaInfo.titlePtBr + " S" + String(mediaInfo.season).padStart(2, "0") + "E" + String(mediaInfo.episode).padStart(2, "0")
-    : mediaInfo.titlePtBr + (mediaInfo.year ? " (" + mediaInfo.year + ")" : "");
-
-  for (var i = 0; i < embedInfo.embeds.length; i++) {
-    var embed = embedInfo.embeds[i];
-    streams.push({
-      name: "RedeCanais.ph - " + (SERVER_NAMES[embed.server] || embed.server),
-      title: title + " [" + audioLabel + "] [" + qualityLabel + "]",
-      url: embed.embedUrl, quality: qualityLabel, type: "url",
-      headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT, Origin: BASE_URL },
-    });
+function formatTitle(m) {
+  if (m.mediaType === "tv" && m.season && m.episode) {
+    var s = String(m.season); if (s.length < 2) s = "0" + s;
+    var e = String(m.episode); if (e.length < 2) e = "0" + e;
+    return m.titlePtBr + " S" + s + "E" + e;
   }
-  return streams;
+  return m.titlePtBr + (m.year ? " (" + m.year + ")" : "");
+}
+
+function buildStream(directUrl, host, hostDomain, embedInfo, mediaInfo) {
+  var audio = embedInfo.isDubbed ? "Dublado" : embedInfo.isLegendado ? "Legendado" : "PT-BR";
+  var quality = embedInfo.quality || "HD";
+  var refererHost = "https://" + hostDomain + "/";
+  return {
+    name: PROVIDER_TAG + " - " + (SERVER_NAMES[host] || host),
+    title: formatTitle(mediaInfo) + " [" + audio + "] [" + quality + "]",
+    url: directUrl,
+    quality: quality,
+    type: directUrl.indexOf(".m3u8") !== -1 ? "hls" : "url",
+    headers: {
+      "User-Agent": USER_AGENT,
+      Referer: refererHost,
+      Origin: refererHost.replace(/\/$/, ""),
+    },
+  };
 }
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   if (!mediaType) mediaType = "movie";
   return __async(this, null, function* () {
-    console.log("[RedeCanais.ph] Fetching streams for TMDB: " + tmdbId + " Type: " + mediaType +
-      (mediaType === "tv" ? " S:" + seasonNum + "E:" + episodeNum : ""));
+    console.log("[" + PROVIDER_TAG + "] getStreams tmdb=" + tmdbId + " type=" + mediaType +
+      (mediaType === "tv" ? " S" + seasonNum + "E" + episodeNum : ""));
     try {
-      var tmdbInfo = yield getTmdbInfo(tmdbId, mediaType);
-      if (!tmdbInfo.titlePtBr && !tmdbInfo.titleEn) return [];
-
-      var contentUrl = null;
-      if (mediaType === "movie") {
-        contentUrl = yield findMoviePage(tmdbInfo);
-      } else {
-        contentUrl = yield findEpisodePage(tmdbInfo, seasonNum, episodeNum);
-      }
+      var tmdb = yield getTmdbInfo(tmdbId, mediaType);
+      if (!tmdb.titlePtBr && !tmdb.titleEn) return [];
+      var contentUrl = mediaType === "tv"
+        ? yield findEpisodePage(tmdb, seasonNum, episodeNum)
+        : yield findMoviePage(tmdb);
       if (!contentUrl) return [];
-
-      var embedInfo = yield extractEmbedInfo(contentUrl);
+      var embedInfo = yield extractEmbeds(contentUrl);
       if (embedInfo.embeds.length === 0) return [];
 
       var mediaInfo = {
-        titlePtBr: tmdbInfo.titlePtBr || tmdbInfo.titleEn,
-        titleEn: tmdbInfo.titleEn, year: tmdbInfo.year,
-        mediaType: mediaType, season: seasonNum, episode: episodeNum,
+        titlePtBr: tmdb.titlePtBr || tmdb.titleEn,
+        year: tmdb.year, mediaType: mediaType,
+        season: seasonNum, episode: episodeNum,
       };
-      var streams = buildStreams(embedInfo, mediaInfo);
-      console.log("[RedeCanais.ph] Processed " + streams.length + " streams");
+
+      var streams = [];
+      for (var i = 0; i < embedInfo.embeds.length; i++) {
+        var emb = embedInfo.embeds[i];
+        var canonical = yield resolveRedirect(emb, embedInfo.playerUrl);
+        if (!canonical) continue;
+        var hostDomain = "";
+        var hostMatch = canonical.match(/^https?:\/\/([^\/]+)/);
+        if (hostMatch) hostDomain = hostMatch[1];
+        var direct = yield extractDirectFromHost(emb.server, canonical);
+        if (direct) {
+          streams.push(buildStream(direct, emb.server, hostDomain, embedInfo, mediaInfo));
+          console.log("[" + PROVIDER_TAG + "] ✓ " + emb.server + " -> " + direct.substring(0, 80));
+        }
+      }
+      console.log("[" + PROVIDER_TAG + "] returning " + streams.length + " streams");
       return streams;
-    } catch (error) {
-      console.error("[RedeCanais.ph] Error: " + error.message);
+    } catch (e) {
+      console.error("[" + PROVIDER_TAG + "] error: " + e.message);
       return [];
     }
   });

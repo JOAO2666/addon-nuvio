@@ -1,14 +1,11 @@
 /**
  * RedeCanais - Nuvio Provider
- * Scrapes movies, TV series, and anime from redecanaistv.autos
- * Supports: Filemoon (Byse), DoodStream, MixDrop, StreamTape
- * Content Language: Portuguese (BR) - Dubbed & Subtitled
+ * Scrapes movies, TV series and anime from redecanaistv.autos
+ * Returns DIRECT video URLs (m3u8 / mp4) by resolving the embed pages
+ * (Filemoon / MixDrop / StreamTape / DoodStream) so the Nuvio native
+ * player (KSPlayer / AndroidVideoPlayer) can play them without errors.
  *
- * Series/Anime Strategy:
- *   1. Search for the series main page
- *   2. Scrape episode links from the main page (format: SxE e.g. 1x1, 1x2)
- *   3. Navigate to the specific episode page
- *   4. Extract embed info from the episode page
+ * Hermes compatible (no async/await – uses generator + __async helper)
  */
 "use strict";
 
@@ -19,32 +16,27 @@ var TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706";
 var BASE_URL = "https://www.redecanaistv.autos";
 var USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+var PROVIDER_TAG = "RedeCanais";
 
 var SERVER_NAMES = {
-  filemoon: "Byse",
+  filemoon: "Filemoon",
+  byse: "Filemoon",
   doodstream: "DoodStream",
+  dood: "DoodStream",
   mixdrop: "MixDrop",
   streamtape: "StreamTape",
 };
 
 // ─────────────────────────────────────────────
-// Async Helper (compatibility with Hermes/RN)
+// Async helper (Hermes-safe generator runner)
 // ─────────────────────────────────────────────
 var __async = function (__this, __arguments, generator) {
   return new Promise(function (resolve, reject) {
-    var fulfilled = function (value) {
-      try {
-        step(generator.next(value));
-      } catch (e) {
-        reject(e);
-      }
+    var fulfilled = function (v) {
+      try { step(generator.next(v)); } catch (e) { reject(e); }
     };
-    var rejected = function (value) {
-      try {
-        step(generator.throw(value));
-      } catch (e) {
-        reject(e);
-      }
+    var rejected = function (v) {
+      try { step(generator.throw(v)); } catch (e) { reject(e); }
     };
     var step = function (x) {
       return x.done
@@ -56,10 +48,10 @@ var __async = function (__this, __arguments, generator) {
 };
 
 // ─────────────────────────────────────────────
-// HTTP Helper
+// HTTP helper
 // ─────────────────────────────────────────────
-function makeRequest(url, options) {
-  if (!options) options = {};
+function httpGet(url, opts) {
+  if (!opts) opts = {};
   return __async(this, null, function* () {
     var headers = Object.assign(
       {
@@ -67,115 +59,54 @@ function makeRequest(url, options) {
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        Connection: "keep-alive",
       },
-      options.headers || {}
+      opts.headers || {}
     );
+    var response = yield fetch(url, {
+      method: opts.method || "GET",
+      headers: headers,
+      redirect: opts.redirect || "follow",
+    });
+    return response;
+  });
+}
 
+function fetchText(url, opts) {
+  return __async(this, null, function* () {
     try {
-      var response = yield fetch(url, {
-        method: options.method || "GET",
-        headers: headers,
-        redirect: options.redirect || "follow",
-      });
-      if (!response.ok) {
-        throw new Error(
-          "HTTP " + response.status + ": " + response.statusText
-        );
-      }
-      return response;
-    } catch (error) {
-      console.error(
-        "[RedeCanais] Request failed for " + url + ": " + error.message
-      );
-      throw error;
+      var r = yield httpGet(url, opts);
+      return yield r.text();
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] fetchText failed: " + url + " -> " + e.message);
+      return "";
     }
   });
 }
 
 // ─────────────────────────────────────────────
-// TMDB Helper - Get title in PT-BR and EN
+// TMDB helper (PT-BR + EN)
 // ─────────────────────────────────────────────
 function getTmdbInfo(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    var endpoint = mediaType === "tv" ? "tv" : "movie";
-    var url =
-      "https://api.themoviedb.org/3/" +
-      endpoint +
-      "/" +
-      tmdbId +
-      "?api_key=" +
-      TMDB_API_KEY +
-      "&language=pt-BR";
-    var response = yield makeRequest(url, {
-      headers: { Accept: "application/json" },
-    });
-    var data = yield response.json();
+    var ep = mediaType === "tv" ? "tv" : "movie";
+    var ptUrl = "https://api.themoviedb.org/3/" + ep + "/" + tmdbId +
+      "?api_key=" + TMDB_API_KEY + "&language=pt-BR";
+    var enUrl = "https://api.themoviedb.org/3/" + ep + "/" + tmdbId +
+      "?api_key=" + TMDB_API_KEY + "&language=en-US";
 
-    var titlePtBr = mediaType === "tv" ? data.name : data.title;
+    var ptResp = yield httpGet(ptUrl, { headers: { Accept: "application/json" } });
+    var ptData = yield ptResp.json();
+    var enResp = yield httpGet(enUrl, { headers: { Accept: "application/json" } });
+    var enData = yield enResp.json();
 
-    // Get EN title
-    var urlEn =
-      "https://api.themoviedb.org/3/" +
-      endpoint +
-      "/" +
-      tmdbId +
-      "?api_key=" +
-      TMDB_API_KEY +
-      "&language=en-US";
-    var responseEn = yield makeRequest(urlEn, {
-      headers: { Accept: "application/json" },
-    });
-    var dataEn = yield responseEn.json();
-    var titleEn = mediaType === "tv" ? dataEn.name : dataEn.title;
+    var titlePtBr = mediaType === "tv" ? ptData.name : ptData.title;
+    var titleEn = mediaType === "tv" ? enData.name : enData.title;
+    var year = mediaType === "tv"
+      ? (ptData.first_air_date ? ptData.first_air_date.substring(0, 4) : "")
+      : (ptData.release_date ? ptData.release_date.substring(0, 4) : "");
 
-    var year =
-      mediaType === "tv"
-        ? data.first_air_date
-          ? data.first_air_date.substring(0, 4)
-          : ""
-        : data.release_date
-        ? data.release_date.substring(0, 4)
-        : "";
-
-    var imdbId = data.imdb_id || (dataEn ? dataEn.imdb_id : null);
-
-    if (!imdbId && mediaType === "tv") {
-      try {
-        var extUrl =
-          "https://api.themoviedb.org/3/tv/" +
-          tmdbId +
-          "/external_ids?api_key=" +
-          TMDB_API_KEY;
-        var extResp = yield makeRequest(extUrl, {
-          headers: { Accept: "application/json" },
-        });
-        var extData = yield extResp.json();
-        imdbId = extData.imdb_id;
-      } catch (e) {
-        console.log("[RedeCanais] Could not fetch external IDs");
-      }
-    }
-
-    console.log(
-      '[RedeCanais] TMDB Info: "' +
-        titlePtBr +
-        '" / "' +
-        titleEn +
-        '" (' +
-        year +
-        ") IMDB: " +
-        imdbId
-    );
-
-    return {
-      titlePtBr: titlePtBr,
-      titleEn: titleEn,
-      year: year,
-      imdbId: imdbId,
-      data: data,
-      totalSeasons: data.number_of_seasons || 0,
-    };
+    console.log("[" + PROVIDER_TAG + "] TMDB: \"" + titlePtBr + "\" / \"" + titleEn + "\" (" + year + ")");
+    return { titlePtBr: titlePtBr, titleEn: titleEn, year: year };
   });
 }
 
@@ -183,577 +114,504 @@ function getTmdbInfo(tmdbId, mediaType) {
 // Slug helper
 // ─────────────────────────────────────────────
 function generateSlug(title) {
-  return title
-    .toLowerCase()
-    .replace(/[àáâãäå]/g, "a")
-    .replace(/[èéêë]/g, "e")
-    .replace(/[ìíîï]/g, "i")
-    .replace(/[òóôõö]/g, "o")
-    .replace(/[ùúûü]/g, "u")
-    .replace(/[ç]/g, "c")
-    .replace(/[ñ]/g, "n")
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+  return title.toLowerCase()
+    .replace(/[àáâãäå]/g, "a").replace(/[èéêë]/g, "e")
+    .replace(/[ìíîï]/g, "i").replace(/[òóôõö]/g, "o")
+    .replace(/[ùúûü]/g, "u").replace(/[ç]/g, "c").replace(/[ñ]/g, "n")
+    .replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-")
+    .replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
 // ─────────────────────────────────────────────
-// Search RedeCanais via /pesquisar/ endpoint
+// Search RedeCanais
 // ─────────────────────────────────────────────
-function searchRedeCanais(query) {
+function searchSite(query) {
   return __async(this, null, function* () {
-    console.log('[RedeCanais] Searching for: "' + query + '"');
-
-    var searchUrl =
-      BASE_URL + "/pesquisar/?p=" + encodeURIComponent(query);
-
-    try {
-      var response = yield makeRequest(searchUrl);
-      var html = yield response.text();
-
-      var results = [];
-
-      // Site uses SINGLE QUOTES for content links
-      var linkRegex =
-        /href=['"]([^'"]*\/assistir-[^'"]+)['"]/gi;
-      var match;
-
-      while ((match = linkRegex.exec(html)) !== null) {
-        var url = match[1].replace(/&amp;/g, "&");
-        if (url.charAt(0) === "/") {
-          url = BASE_URL + url;
-        }
-        // Skip category/listing pages
-        if (url.indexOf("/assistir/") !== -1) continue;
-        // Must match pattern /assistir-SOMETHING-NUMBER/
-        if (/\/assistir-[^/]+-\d+\/?$/.test(url)) {
-          if (results.indexOf(url) === -1) {
-            results.push(url);
-          }
-        }
+    var searchUrl = BASE_URL + "/pesquisar/?p=" + encodeURIComponent(query);
+    console.log("[" + PROVIDER_TAG + "] search: " + query);
+    var html = yield fetchText(searchUrl);
+    var results = [];
+    var re = /href=['"]([^'"]*\/assistir-[^'"]+)['"]/gi;
+    var m;
+    while ((m = re.exec(html)) !== null) {
+      var url = m[1].replace(/&amp;/g, "&");
+      if (url.charAt(0) === "/") url = BASE_URL + url;
+      if (url.indexOf("/assistir/") !== -1) continue;
+      if (/\/assistir-[^/]+-\d+\/?$/.test(url) && results.indexOf(url) === -1) {
+        results.push(url);
       }
-
-      console.log("[RedeCanais] Found " + results.length + " search results");
-      return results;
-    } catch (error) {
-      console.error("[RedeCanais] Search failed: " + error.message);
-      return [];
     }
+    console.log("[" + PROVIDER_TAG + "] search -> " + results.length + " results");
+    return results;
   });
 }
 
 // ─────────────────────────────────────────────
-// Extract episode links from a series main page
-// Episode URLs follow pattern: /assistir-SERIES-SxE-AUDIO-ID/
+// Episode links from a series page
 // ─────────────────────────────────────────────
-function getEpisodeLinks(seriesPageUrl) {
+function getEpisodeLinks(seriesUrl) {
   return __async(this, null, function* () {
-    console.log("[RedeCanais] Fetching series page for episodes: " + seriesPageUrl);
-
-    try {
-      var response = yield makeRequest(seriesPageUrl);
-      var html = yield response.text();
-
-      var episodes = {};
-
-      // Find all episode links (format: NxN in URL)
-      var linkRegex = /href=['"]([^'"]*\/assistir-[^'"]*-\d+x\d+-[^'"]+)['"]/gi;
-      var match;
-
-      while ((match = linkRegex.exec(html)) !== null) {
-        var url = match[1].replace(/&amp;/g, "&");
-        if (url.charAt(0) === "/") {
-          url = BASE_URL + url;
-        }
-
-        // Extract season and episode from URL (e.g., -1x1- or -1x01-)
-        var seMatch = url.match(/-(\d+)x(\d+)-/i);
-        if (seMatch) {
-          var season = parseInt(seMatch[1]);
-          var episode = parseInt(seMatch[2]);
-          var key = season + "x" + episode;
-
-          if (!episodes[key]) {
-            episodes[key] = {
-              season: season,
-              episode: episode,
-              url: url,
-            };
-          }
+    var html = yield fetchText(seriesUrl);
+    var episodes = {};
+    var re = /href=['"]([^'"]*\/assistir-[^'"]*-\d+x\d+-[^'"]+)['"]/gi;
+    var m;
+    while ((m = re.exec(html)) !== null) {
+      var url = m[1].replace(/&amp;/g, "&");
+      if (url.charAt(0) === "/") url = BASE_URL + url;
+      var se = url.match(/-(\d+)x(\d+)-/i);
+      if (se) {
+        var key = parseInt(se[1]) + "x" + parseInt(se[2]);
+        if (!episodes[key]) {
+          episodes[key] = {
+            season: parseInt(se[1]),
+            episode: parseInt(se[2]),
+            url: url,
+          };
         }
       }
-
-      var count = Object.keys(episodes).length;
-      console.log("[RedeCanais] Found " + count + " episode links");
-      return episodes;
-    } catch (error) {
-      console.error("[RedeCanais] Failed to get episodes: " + error.message);
-      return {};
     }
+    console.log("[" + PROVIDER_TAG + "] episodes found: " + Object.keys(episodes).length);
+    return episodes;
   });
 }
 
 // ─────────────────────────────────────────────
-// Extract embed info from a content page
+// Extract embed info (server + id + token) from player page
 // ─────────────────────────────────────────────
-function extractEmbedInfo(pageUrl) {
+function extractEmbeds(pageUrl) {
   return __async(this, null, function* () {
-    console.log("[RedeCanais] Extracting embeds from: " + pageUrl);
+    var playerUrl = pageUrl.replace(/\/$/, "") + "/?area=online";
+    var html = yield fetchText(playerUrl);
 
-    var playerUrl = pageUrl;
-    if (playerUrl.indexOf("?area=online") === -1) {
-      playerUrl = playerUrl.replace(/\/$/, "") + "/?area=online";
-    }
+    var embeds = [];
 
-    try {
-      var response = yield makeRequest(playerUrl);
-      var html = yield response.text();
-
-      var embeds = [];
-
-      // Method 1: Extract redirect.php links
-      var redirectRegex =
-        /\/e\/redirect\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
-      var match;
-
-      while ((match = redirectRegex.exec(html)) !== null) {
-        var server = match[1];
-        var id = match[2];
-        var token = match[3];
-
-        embeds.push({
-          server: server,
-          contentId: id,
-          token: token,
-          embedUrl:
-            BASE_URL +
-            "/e/getembed.php?sv=" + server +
-            "&id=" + id +
-            "&token=" + token,
-        });
-      }
-
-      // Method 2: Extract getembed.php links
-      var embedRegex =
-        /getembed\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
-
-      while ((match = embedRegex.exec(html)) !== null) {
-        var server = match[1];
-        var id = match[2];
-        var token = match[3];
-
-        var exists = false;
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].server === server && embeds[i].contentId === id) {
-            exists = true;
-            break;
-          }
-        }
-
-        if (!exists) {
-          embeds.push({
-            server: server,
-            contentId: id,
-            token: token,
-            embedUrl:
-              BASE_URL +
-              "/e/getembed.php?sv=" + server +
-              "&id=" + id +
-              "&token=" + token,
-          });
-        }
-      }
-
-      // Method 3: Extract C_Video JavaScript calls
-      var cVideoRegex =
-        /C_Video\s*\(\s*['"](\d+)['"],\s*['"]([^'"]+)['"]\)/gi;
-      while ((match = cVideoRegex.exec(html)) !== null) {
-        var id = match[1];
-        var server = match[2];
-        var tokenForId = "";
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].contentId === id) {
-            tokenForId = embeds[i].token;
-            break;
-          }
-        }
-
-        var exists = false;
-        for (var i = 0; i < embeds.length; i++) {
-          if (embeds[i].server === server && embeds[i].contentId === id) {
-            exists = true;
-            break;
-          }
-        }
-
-        if (!exists && tokenForId) {
-          embeds.push({
-            server: server,
-            contentId: id,
-            token: tokenForId,
-            embedUrl:
-              BASE_URL +
-              "/e/getembed.php?sv=" + server +
-              "&id=" + id +
-              "&token=" + tokenForId,
-          });
-        }
-      }
-
-      // Detect audio and quality
-      var isDubbed =
-        html.indexOf("Dublado") !== -1 || html.indexOf("DUB") !== -1;
-      var isLegendado =
-        html.indexOf("Legendado") !== -1 || html.indexOf("LEG") !== -1;
-      var isHD = html.indexOf("HD") !== -1;
-      var isCAM = html.indexOf("CAM") !== -1;
-      var quality = isCAM ? "CAM" : isHD ? "HD" : "SD";
-
-      // Resolve the actual video host URLs using the redirect.php endpoint
+    function addEmbed(server, id, token) {
       for (var i = 0; i < embeds.length; i++) {
-        var server = embeds[i].server;
-        var redirectUrl = BASE_URL + "/e/redirect.php?sv=" + server + "&id=" + embeds[i].contentId + "&token=" + embeds[i].token;
-        try {
-          var redResp = yield fetch(redirectUrl, {
-            method: "GET",
-            redirect: "manual",
-            headers: {
-              "User-Agent": USER_AGENT,
-              "Referer": playerUrl
-            }
-          });
-          var loc = redResp.headers.get("location");
-          if (loc) {
-            var videoId = loc.split('/').pop().split('?')[0];
-            var canonical = loc;
-            
-            if (server === "filemoon" || server === "byse") canonical = "https://filemoon.sx/e/" + videoId;
-            else if (server === "doodstream" || server === "dood") canonical = "https://dood.li/e/" + videoId;
-            else if (server === "mixdrop") canonical = "https://mixdrop.co/e/" + videoId;
-            else if (server === "streamtape") canonical = "https://streamtape.com/e/" + videoId;
-            
-            embeds[i].embedUrl = canonical;
-          }
-        } catch(e) {
-          console.log("[RedeCanais] Failed to resolve redirect for " + server);
-        }
+        if (embeds[i].server === server && embeds[i].contentId === id) return;
       }
-
-      console.log(
-        "[RedeCanais] Found " + embeds.length + " embeds, Quality: " + quality
-      );
-
-      return {
-        embeds: embeds,
-        isDubbed: isDubbed,
-        isLegendado: isLegendado,
-        quality: quality,
-      };
-    } catch (error) {
-      console.error(
-        "[RedeCanais] Failed to extract embeds: " + error.message
-      );
-      return { embeds: [], quality: "Unknown" };
+      embeds.push({
+        server: server,
+        contentId: id,
+        token: token,
+        redirectUrl: BASE_URL + "/e/redirect.php?sv=" + server + "&id=" + id + "&token=" + token,
+      });
     }
+
+    var re1 = /\/e\/redirect\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
+    var m;
+    while ((m = re1.exec(html)) !== null) addEmbed(m[1], m[2], m[3]);
+
+    var re2 = /getembed\.php\?sv=([^&"']+)&(?:amp;)?id=(\d+)&(?:amp;)?token=([^"'&\s]+)/gi;
+    while ((m = re2.exec(html)) !== null) addEmbed(m[1], m[2], m[3]);
+
+    var re3 = /C_Video\s*\(\s*['"](\d+)['"]\s*,\s*['"]([^'"]+)['"]\)/gi;
+    while ((m = re3.exec(html)) !== null) {
+      var id = m[1], srv = m[2], tok = "";
+      for (var i = 0; i < embeds.length; i++) {
+        if (embeds[i].contentId === id) { tok = embeds[i].token; break; }
+      }
+      if (tok) addEmbed(srv, id, tok);
+    }
+
+    var isDubbed = /Dublado|DUB\b/i.test(html);
+    var isLegendado = /Legendado|LEG\b/i.test(html);
+    var qualityMatch = html.match(/\b(4k|2160p|1080p|720p|480p|CAM|HD|SD)\b/i);
+    var quality = qualityMatch ? qualityMatch[1].toUpperCase() : "HD";
+
+    console.log("[" + PROVIDER_TAG + "] embeds: " + embeds.length + " quality=" + quality);
+    return {
+      playerUrl: playerUrl,
+      embeds: embeds,
+      isDubbed: isDubbed,
+      isLegendado: isLegendado,
+      quality: quality,
+    };
   });
 }
 
 // ─────────────────────────────────────────────
-// Find content page for MOVIES
+// Resolve redirect.php -> canonical host URL
+// ─────────────────────────────────────────────
+function resolveRedirect(embed, playerUrl) {
+  return __async(this, null, function* () {
+    try {
+      var r = yield fetch(embed.redirectUrl, {
+        method: "GET",
+        redirect: "manual",
+        headers: { "User-Agent": USER_AGENT, Referer: playerUrl },
+      });
+      var loc = r.headers.get("location") || r.headers.get("Location");
+      if (!loc) {
+        // Some runtimes follow redirect anyway - use final URL
+        if (r.url && r.url !== embed.redirectUrl) loc = r.url;
+      }
+      if (!loc) return null;
+      return loc;
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] redirect resolve failed: " + e.message);
+      return null;
+    }
+  });
+}
+
+// ═════════════════════════════════════════════
+// VIDEO HOST EXTRACTORS (return direct m3u8/mp4)
+// ═════════════════════════════════════════════
+
+// Dean Edwards p,a,c,k,e,d unpacker (handles count=0 fallback)
+function unpack(source) {
+  var re = /\}\s*\('([^]+?)'\s*,\s*(\d+|\[\])\s*,\s*(\d+)\s*,\s*'([^]+?)'\.split\('\|'\)/;
+  var m = source.match(re);
+  if (!m) return source;
+  var payload = m[1];
+  var radix = parseInt(m[2]);
+  if (isNaN(radix)) radix = 62;
+  var count = parseInt(m[3]);
+  var symtab = m[4].split("|");
+  if (count === 0) count = symtab.length;
+
+  function enc(c) {
+    return (c < radix ? "" : enc(Math.floor(c / radix))) +
+      ((c = c % radix) > 35 ? String.fromCharCode(c + 29) : c.toString(36));
+  }
+
+  while (count--) {
+    if (symtab[count]) {
+      try {
+        payload = payload.replace(new RegExp("\\b" + enc(count) + "\\b", "g"), symtab[count]);
+      } catch (e) { /* ignore bad regex */ }
+    }
+  }
+  return payload;
+}
+
+// Extract direct URL from Filemoon/Byse
+function extractFilemoon(embedUrl) {
+  return __async(this, null, function* () {
+    try {
+      var html = yield fetchText(embedUrl, {
+        headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT },
+      });
+      if (!html) return null;
+
+      var packedMatch = html.match(/eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?\}\('([\s\S]+?)',\s*\d+,\s*\d+,\s*'[\s\S]+?'\.split\('\|'\)[^)]*\)\)/);
+      if (!packedMatch) {
+        var fileMatch = html.match(/file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+        if (fileMatch) return fileMatch[1];
+        return null;
+      }
+      var unpacked = unpack(packedMatch[0]);
+      var m = unpacked.match(/file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+      if (m) return m[1];
+      m = unpacked.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["']([^"']+)["']/);
+      if (m) return m[1];
+      m = unpacked.match(/src\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+      if (m) return m[1];
+      return null;
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] filemoon extract failed: " + e.message);
+      return null;
+    }
+  });
+}
+
+// Extract direct URL from MixDrop
+// Notes:
+//   - mixdrop.co redirects to ads; use mixdrop.ag/.sx instead
+//   - /f/ endpoint is the download page; /e/ is the embed with packed source
+function extractMixDrop(embedUrl) {
+  return __async(this, null, function* () {
+    try {
+      var workingUrl = embedUrl
+        .replace(/mixdrop\.co/i, "mixdrop.ag")
+        .replace(/mixdrop\.to/i, "mixdrop.ag")
+        .replace(/\/f\/([a-zA-Z0-9]+)/, "/e/$1");
+
+      var html = yield fetchText(workingUrl, {
+        headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT },
+      });
+      if (!html) return null;
+
+      var packedMatch = html.match(/eval\(function\(p,a,c,k,e,d\)[^]*?\}\([^]*?\.split\('\|'\)[^)]*\)\)/);
+      if (!packedMatch) return null;
+      var unpacked = unpack(packedMatch[0]);
+      var m = unpacked.match(/MDCore\.wurl\s*=\s*["']([^"']+)["']/) ||
+              unpacked.match(/wurl\s*=\s*["']([^"']+)["']/);
+      if (!m) return null;
+      var u = m[1].trim();
+      if (u.indexOf("//") === 0) u = "https:" + u;
+      return u;
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] mixdrop extract failed: " + e.message);
+      return null;
+    }
+  });
+}
+
+// Extract direct URL from StreamTape
+function extractStreamTape(embedUrl) {
+  return __async(this, null, function* () {
+    try {
+      var html = yield fetchText(embedUrl, {
+        headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT },
+      });
+      if (!html) return null;
+
+      var m = html.match(/id=["']robotlink["'][^>]*>([^<]+)<\/[^>]+>\s*<script[^>]*>[\s\S]*?innerHTML\s*=\s*(['"])([^'"]+)\2\s*\+\s*(['"])([^'"]+)\4/);
+      if (m) {
+        var part1 = m[3];
+        var part2 = m[5];
+        var raw = part1 + part2.substring(3);
+        if (raw.indexOf("//") === 0) raw = "https:" + raw;
+        return raw;
+      }
+      var simple = html.match(/robotlink['"]\)\.innerHTML\s*=\s*["']([^"']+)["']\s*\+\s*\(['"]([^'"]+)['"]\)/);
+      if (simple) {
+        var r2 = simple[1] + simple[2].substring(3);
+        if (r2.indexOf("//") === 0) r2 = "https:" + r2;
+        return r2;
+      }
+      return null;
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] streamtape extract failed: " + e.message);
+      return null;
+    }
+  });
+}
+
+// Extract direct URL from DoodStream
+function extractDoodStream(embedUrl) {
+  return __async(this, null, function* () {
+    try {
+      var html = yield fetchText(embedUrl, {
+        headers: { Referer: BASE_URL + "/", "User-Agent": USER_AGENT },
+      });
+      if (!html) return null;
+
+      var pathMatch = html.match(/\$\.get\s*\(\s*['"]([^'"]*\/pass_md5\/[^'"]+)['"]/);
+      if (!pathMatch) pathMatch = html.match(/['"]([^'"]*\/pass_md5\/[^'"]+)['"]/);
+      if (!pathMatch) return null;
+
+      var passPath = pathMatch[1];
+      var origin = embedUrl.match(/^(https?:\/\/[^\/]+)/);
+      if (!origin) return null;
+      var passUrl = passPath.indexOf("http") === 0 ? passPath : origin[1] + passPath;
+
+      var tokenMatch = passPath.match(/\/pass_md5\/[^/]+\/([^/?]+)/);
+      if (!tokenMatch) tokenMatch = passPath.match(/\/pass_md5\/([^/?]+)/);
+      var token = tokenMatch ? tokenMatch[tokenMatch.length - 1] : "";
+
+      var baseResp = yield fetch(passUrl, {
+        headers: { Referer: embedUrl, "User-Agent": USER_AGENT },
+      });
+      var baseText = yield baseResp.text();
+      if (!baseText || baseText.indexOf("http") !== 0) return null;
+
+      var rand = "";
+      var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      for (var i = 0; i < 10; i++) rand += chars.charAt(Math.floor(Math.random() * chars.length));
+
+      var finalUrl = baseText + rand + "?token=" + token + "&expiry=" + Date.now();
+      return finalUrl;
+    } catch (e) {
+      console.log("[" + PROVIDER_TAG + "] doodstream extract failed: " + e.message);
+      return null;
+    }
+  });
+}
+
+function extractDirectFromHost(server, embedUrl) {
+  return __async(this, null, function* () {
+    var s = (server || "").toLowerCase();
+    if (s === "filemoon" || s === "byse" || embedUrl.indexOf("filemoon") !== -1 || embedUrl.indexOf("byse") !== -1) {
+      return yield extractFilemoon(embedUrl);
+    }
+    if (s === "mixdrop" || embedUrl.indexOf("mixdrop") !== -1 || embedUrl.indexOf("mdbekjwqa") !== -1 || embedUrl.indexOf("md3b0j6hj") !== -1) {
+      return yield extractMixDrop(embedUrl);
+    }
+    if (s === "streamtape" || embedUrl.indexOf("streamtape") !== -1) {
+      return yield extractStreamTape(embedUrl);
+    }
+    if (s === "doodstream" || s === "dood" || /dood(?:\.|stream|s\.)/i.test(embedUrl)) {
+      return yield extractDoodStream(embedUrl);
+    }
+    return yield extractFilemoon(embedUrl);
+  });
+}
+
+// ─────────────────────────────────────────────
+// Find movie content page
 // ─────────────────────────────────────────────
 function findMoviePage(tmdbInfo) {
   return __async(this, null, function* () {
     var titles = [];
     if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) {
-      titles.push(tmdbInfo.titleEn);
-    }
+    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
 
     for (var t = 0; t < titles.length; t++) {
-      var query = titles[t];
-      var slug = generateSlug(query);
-      var results = yield searchRedeCanais(query);
-
+      var slug = generateSlug(titles[t]);
+      var results = yield searchSite(titles[t]);
       if (results.length === 0) continue;
 
-      // Filter only movie results (exclude series episodes)
-      var movieResults = [];
+      var movies = [];
       for (var i = 0; i < results.length; i++) {
-        var url = results[i].toLowerCase();
-        // Skip series episodes (contain SxE pattern like 1x1, 2x3)
-        if (/\d+x\d+/.test(url)) continue;
-        movieResults.push(results[i]);
+        if (!/\d+x\d+/.test(results[i].toLowerCase())) movies.push(results[i]);
       }
-
-      // Priority 1: Slug + Year (most precise)
-      for (var i = 0; i < movieResults.length; i++) {
-        var url = movieResults[i].toLowerCase();
-        if (
-          url.indexOf(slug) !== -1 &&
-          tmdbInfo.year &&
-          url.indexOf(tmdbInfo.year) !== -1
-        ) {
-          console.log("[RedeCanais] Movie match (slug+year): " + movieResults[i]);
-          return movieResults[i];
-        }
+      for (var i = 0; i < movies.length; i++) {
+        var u = movies[i].toLowerCase();
+        if (u.indexOf(slug) !== -1 && tmdbInfo.year && u.indexOf(tmdbInfo.year) !== -1) return movies[i];
       }
-
-      // Priority 2: Slug only
-      for (var i = 0; i < movieResults.length; i++) {
-        var url = movieResults[i].toLowerCase();
-        if (url.indexOf(slug) !== -1) {
-          console.log("[RedeCanais] Movie match (slug): " + movieResults[i]);
-          return movieResults[i];
-        }
+      for (var i = 0; i < movies.length; i++) {
+        if (movies[i].toLowerCase().indexOf(slug) !== -1) return movies[i];
       }
-
-      // Priority 3: Year only
-      for (var i = 0; i < movieResults.length; i++) {
-        var url = movieResults[i].toLowerCase();
-        if (tmdbInfo.year && url.indexOf(tmdbInfo.year) !== -1) {
-          console.log("[RedeCanais] Movie match (year): " + movieResults[i]);
-          return movieResults[i];
-        }
-      }
-
-      // Fallback: first movie result
-      if (movieResults.length > 0) {
-        console.log("[RedeCanais] Movie match (fallback): " + movieResults[0]);
-        return movieResults[0];
-      }
+      if (movies.length > 0) return movies[0];
     }
-
-    console.log("[RedeCanais] No movie page found");
     return null;
   });
 }
 
 // ─────────────────────────────────────────────
-// Find content page for SERIES / ANIME
-// Strategy: find series main page → get episode list → pick correct episode
+// Find episode page
 // ─────────────────────────────────────────────
 function findEpisodePage(tmdbInfo, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     var titles = [];
     if (tmdbInfo.titlePtBr) titles.push(tmdbInfo.titlePtBr);
-    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) {
-      titles.push(tmdbInfo.titleEn);
-    }
+    if (tmdbInfo.titleEn && tmdbInfo.titleEn !== tmdbInfo.titlePtBr) titles.push(tmdbInfo.titleEn);
 
     for (var t = 0; t < titles.length; t++) {
-      var query = titles[t];
-      var slug = generateSlug(query);
-      var results = yield searchRedeCanais(query);
-
+      var slug = generateSlug(titles[t]);
+      var results = yield searchSite(titles[t]);
       if (results.length === 0) continue;
 
-      // Find the series main page (NOT an episode page)
-      // Series main pages typically have the year and NO SxE pattern
       var seriesPages = [];
       var episodePages = [];
-
       for (var i = 0; i < results.length; i++) {
-        var url = results[i].toLowerCase();
-        if (/\d+x\d+/.test(url)) {
-          episodePages.push(results[i]);
-        } else {
-          seriesPages.push(results[i]);
-        }
+        if (/\d+x\d+/.test(results[i].toLowerCase())) episodePages.push(results[i]);
+        else seriesPages.push(results[i]);
       }
 
-      // First check if any episode pages match exactly
       for (var i = 0; i < episodePages.length; i++) {
-        var url = episodePages[i].toLowerCase();
-        var seMatch = url.match(/-(\d+)x(\d+)-/);
-        if (
-          seMatch &&
-          parseInt(seMatch[1]) === parseInt(seasonNum) &&
-          parseInt(seMatch[2]) === parseInt(episodeNum)
-        ) {
-          console.log("[RedeCanais] Direct episode match: " + episodePages[i]);
+        var se = episodePages[i].toLowerCase().match(/-(\d+)x(\d+)-/);
+        if (se && parseInt(se[1]) === parseInt(seasonNum) && parseInt(se[2]) === parseInt(episodeNum)) {
           return episodePages[i];
         }
       }
 
-      // Find the series main page and scrape episodes from it
       var seriesUrl = null;
-
-      // Priority: slug match
       for (var i = 0; i < seriesPages.length; i++) {
-        var url = seriesPages[i].toLowerCase();
-        if (url.indexOf(slug) !== -1) {
-          seriesUrl = seriesPages[i];
-          break;
-        }
+        if (seriesPages[i].toLowerCase().indexOf(slug) !== -1) { seriesUrl = seriesPages[i]; break; }
       }
-
-      // Fallback: first series page
-      if (!seriesUrl && seriesPages.length > 0) {
-        seriesUrl = seriesPages[0];
-      }
+      if (!seriesUrl && seriesPages.length > 0) seriesUrl = seriesPages[0];
 
       if (seriesUrl) {
-        console.log("[RedeCanais] Found series page: " + seriesUrl);
-
-        // Get all episode links from the series page
         var episodes = yield getEpisodeLinks(seriesUrl);
         var key = parseInt(seasonNum) + "x" + parseInt(episodeNum);
+        if (episodes[key]) return episodes[key].url;
 
-        if (episodes[key]) {
-          console.log(
-            "[RedeCanais] Found episode " + key + ": " + episodes[key].url
-          );
-          return episodes[key].url;
-        }
-
-        // Try zero-padded format
-        var keyPadded =
-          parseInt(seasonNum) +
-          "x" +
-          (parseInt(episodeNum) < 10
-            ? "0" + parseInt(episodeNum)
-            : parseInt(episodeNum));
-        if (episodes[keyPadded]) {
-          console.log(
-            "[RedeCanais] Found episode " +
-              keyPadded +
-              ": " +
-              episodes[keyPadded].url
-          );
-          return episodes[keyPadded].url;
-        }
-
-        console.log(
-          "[RedeCanais] Episode " +
-            key +
-            " not found in " +
-            Object.keys(episodes).length +
-            " episodes"
-        );
-
-        // If no specific episode found but we have the series page,
-        // return null (vs returning the series page which has no embeds)
+        // Try zero padded
+        var pad = parseInt(seasonNum) + "x" + (parseInt(episodeNum) < 10 ? "0" + parseInt(episodeNum) : parseInt(episodeNum));
+        if (episodes[pad]) return episodes[pad].url;
       }
     }
-
-    console.log("[RedeCanais] No episode page found");
     return null;
   });
 }
 
 // ─────────────────────────────────────────────
-// Build stream objects for Nuvio
+// Build streams from resolved direct URLs
 // ─────────────────────────────────────────────
-function buildStreams(embedInfo, mediaInfo) {
-  var streams = [];
-
-  var audioLabel = embedInfo.isDubbed
-    ? "Dublado"
-    : embedInfo.isLegendado
-    ? "Legendado"
-    : "PT-BR";
-  var qualityLabel = embedInfo.quality || "HD";
-
-  var title =
-    mediaInfo.mediaType === "tv" && mediaInfo.season && mediaInfo.episode
-      ? mediaInfo.titlePtBr +
-        " S" +
-        String(mediaInfo.season).padStart(2, "0") +
-        "E" +
-        String(mediaInfo.episode).padStart(2, "0")
-      : mediaInfo.titlePtBr +
-        (mediaInfo.year ? " (" + mediaInfo.year + ")" : "");
-
-  for (var i = 0; i < embedInfo.embeds.length; i++) {
-    var embed = embedInfo.embeds[i];
-    var serverName = SERVER_NAMES[embed.server] || embed.server;
-    var streamName = "RedeCanais - " + serverName;
-
-    streams.push({
-      name: streamName,
-      title: title + " [" + audioLabel + "] [" + qualityLabel + "]",
-      url: embed.embedUrl,
-      quality: qualityLabel,
-      type: "url",
-      headers: {
-        Referer: BASE_URL + "/",
-        "User-Agent": USER_AGENT,
-        Origin: BASE_URL,
-      },
-    });
+function formatTitle(mediaInfo) {
+  if (mediaInfo.mediaType === "tv" && mediaInfo.season && mediaInfo.episode) {
+    var s = String(mediaInfo.season);
+    var e = String(mediaInfo.episode);
+    if (s.length < 2) s = "0" + s;
+    if (e.length < 2) e = "0" + e;
+    return mediaInfo.titlePtBr + " S" + s + "E" + e;
   }
+  return mediaInfo.titlePtBr + (mediaInfo.year ? " (" + mediaInfo.year + ")" : "");
+}
 
-  return streams;
+function buildStream(directUrl, host, hostDomain, embedInfo, mediaInfo) {
+  var audio = embedInfo.isDubbed ? "Dublado" : embedInfo.isLegendado ? "Legendado" : "PT-BR";
+  var quality = embedInfo.quality || "HD";
+  var title = formatTitle(mediaInfo) + " [" + audio + "] [" + quality + "]";
+  var refererHost = "https://" + hostDomain + "/";
+
+  return {
+    name: PROVIDER_TAG + " - " + (SERVER_NAMES[host] || host),
+    title: title,
+    url: directUrl,
+    quality: quality,
+    type: directUrl.indexOf(".m3u8") !== -1 ? "hls" : "url",
+    headers: {
+      "User-Agent": USER_AGENT,
+      Referer: refererHost,
+      Origin: refererHost.replace(/\/$/, ""),
+    },
+  };
 }
 
 // ─────────────────────────────────────────────
-// Main: getStreams - Entry point for Nuvio
+// Main entry point
 // ─────────────────────────────────────────────
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   if (!mediaType) mediaType = "movie";
-
   return __async(this, null, function* () {
-    console.log(
-      "[RedeCanais] Fetching streams for TMDB ID: " +
-        tmdbId +
-        ", Type: " +
-        mediaType +
-        (mediaType === "tv"
-          ? ", S:" + seasonNum + "E:" + episodeNum
-          : "")
-    );
+    console.log("[" + PROVIDER_TAG + "] getStreams tmdb=" + tmdbId + " type=" + mediaType +
+      (mediaType === "tv" ? " S" + seasonNum + "E" + episodeNum : ""));
 
     try {
-      // Step 1: Get TMDB info
-      var tmdbInfo = yield getTmdbInfo(tmdbId, mediaType);
+      var tmdb = yield getTmdbInfo(tmdbId, mediaType);
+      if (!tmdb.titlePtBr && !tmdb.titleEn) return [];
 
-      if (!tmdbInfo.titlePtBr && !tmdbInfo.titleEn) {
-        console.log("[RedeCanais] Could not get title from TMDB");
-        return [];
-      }
-
-      // Step 2: Find the correct content page
-      var contentUrl = null;
-
-      if (mediaType === "movie") {
-        contentUrl = yield findMoviePage(tmdbInfo);
-      } else {
-        // TV series or anime
-        contentUrl = yield findEpisodePage(tmdbInfo, seasonNum, episodeNum);
-      }
+      var contentUrl = mediaType === "tv"
+        ? yield findEpisodePage(tmdb, seasonNum, episodeNum)
+        : yield findMoviePage(tmdb);
 
       if (!contentUrl) {
-        console.log("[RedeCanais] Content not found on site");
+        console.log("[" + PROVIDER_TAG + "] content page not found");
         return [];
       }
 
-      // Step 3: Extract embed info
-      var embedInfo = yield extractEmbedInfo(contentUrl);
-
+      var embedInfo = yield extractEmbeds(contentUrl);
       if (embedInfo.embeds.length === 0) {
-        console.log("[RedeCanais] No playable embeds found");
+        console.log("[" + PROVIDER_TAG + "] no embeds on player page");
         return [];
       }
 
-      // Step 4: Build stream objects
       var mediaInfo = {
-        titlePtBr: tmdbInfo.titlePtBr || tmdbInfo.titleEn,
-        titleEn: tmdbInfo.titleEn,
-        year: tmdbInfo.year,
+        titlePtBr: tmdb.titlePtBr || tmdb.titleEn,
+        year: tmdb.year,
         mediaType: mediaType,
         season: seasonNum,
         episode: episodeNum,
       };
 
-      var streams = buildStreams(embedInfo, mediaInfo);
+      var streams = [];
 
-      console.log(
-        "[RedeCanais] Successfully processed " + streams.length + " streams"
-      );
+      for (var i = 0; i < embedInfo.embeds.length; i++) {
+        var emb = embedInfo.embeds[i];
+        var canonical = yield resolveRedirect(emb, embedInfo.playerUrl);
+        if (!canonical) continue;
+
+        var hostDomain = "";
+        var hostMatch = canonical.match(/^https?:\/\/([^\/]+)/);
+        if (hostMatch) hostDomain = hostMatch[1];
+
+        var direct = yield extractDirectFromHost(emb.server, canonical);
+        if (direct) {
+          streams.push(buildStream(direct, emb.server, hostDomain, embedInfo, mediaInfo));
+          console.log("[" + PROVIDER_TAG + "] ✓ " + emb.server + " -> " + direct.substring(0, 80));
+        } else {
+          console.log("[" + PROVIDER_TAG + "] ✗ failed to extract direct from " + emb.server + " (" + canonical + ")");
+        }
+      }
+
+      console.log("[" + PROVIDER_TAG + "] returning " + streams.length + " playable streams");
       return streams;
-    } catch (error) {
-      console.error("[RedeCanais] Error in getStreams: " + error.message);
+    } catch (e) {
+      console.error("[" + PROVIDER_TAG + "] fatal: " + e.message);
       return [];
     }
   });
