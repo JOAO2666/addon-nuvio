@@ -1,6 +1,9 @@
 {
+  "id": "br.nuvio.redecanais",
   "name": "RedeCanais Brasil",
   "version": "1.0.0",
+  "description": "Filmes, séries e animes dublados/legendados do RedeCanais.",
+  "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
   "scrapers": [
     {
       "id": "redecanais",
