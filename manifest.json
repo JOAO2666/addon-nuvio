@@ -73,8 +73,8 @@
     {
       "id": "animefire",
       "name": "AnimeFire",
-      "description": "AnimeFire (animefire.io) - catálogo brasileiro de animes (dublado/legendado). Resolve automaticamente slugs a partir do TMDB e devolve URL .mp4 direta do lightspeedst CDN.",
-      "version": "1.0.0",
+      "description": "AnimeFire (animefire.io) - catálogo brasileiro de animes (dublado/legendado). Resolve slugs via TMDB (incluindo títulos alternativos em romaji) e devolve URL .mp4 direta. Só responde a conteúdo anime (original_language=ja) — séries/filmes não-anime são puladas pra evitar falso positivo.",
+      "version": "1.1.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",

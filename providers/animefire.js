@@ -1,17 +1,15 @@
 /**
  * AnimeFire - Nuvio Provider
  *
- * Scrapes animefire.io — a Brazilian anime catalog that exposes a public
+ * Scrapes animefire.io — a Brazilian anime-only catalog that exposes a public
  * JSON endpoint `/video/{slug}/{episode}` returning direct lightspeedst.net
  * MP4 URLs (no Cloudflare, no iframe resolution, no obfuscation).
  *
- * Flow:
- *   1) Pull Portuguese + original titles from TMDB
- *   2) Search animefire with a few title variations (/pesquisar/{word})
- *   3) Extract candidate slugs, normalize them (strip the -todos-os-episodios
- *      suffix, build dubbed / season variants)
- *   4) Hit /video/{slug}/{ep} for each candidate and return every source the
- *      upstream emits — already labelled "360p / 720p / 1080p" and in MP4.
+ * IMPORTANT: This provider ONLY returns streams for content that is actually
+ * anime (original_language=ja OR origin_country includes JP OR Animation +
+ * Japanese). For everything else (Breaking Bad, The Boys, House of the
+ * Dragon, ...) it returns an empty list so the user is not served a random
+ * unrelated anime that happens to share one word with the title.
  *
  * Hermes-safe (generator + __async helper, no async/await).
  */
@@ -99,6 +97,7 @@ function fetchJson(url, opts) {
 var STOPWORDS = {
   a: 1, o: 1, os: 1, as: 1, de: 1, do: 1, da: 1, dos: 1, das: 1,
   the: 1, of: 1, and: 1, e: 1, "no": 1, na: 1, nos: 1, nas: 1,
+  to: 1, in: 1, on: 1, at: 1, for: 1, ni: 1, wa: 1, ga: 1, wo: 1, ka: 1,
 };
 
 function normalize(str) {
@@ -122,12 +121,18 @@ function slugify(str) {
   return normalize(str).replace(/\s+/g, "-");
 }
 
+function tokensOf(title, minLen) {
+  if (!minLen) minLen = 3;
+  return normalize(title)
+    .split(" ")
+    .filter(function (w) { return w && !STOPWORDS[w] && w.length >= minLen; });
+}
+
 function pickSearchWord(title) {
-  var norm = normalize(title);
-  var words = norm.split(" ").filter(function (w) { return w && !STOPWORDS[w]; });
-  // Prefer the longest non-stopword that contains only letters
+  var words = tokensOf(title, 3);
+  // Prefer the longest non-stopword
   words.sort(function (a, b) { return b.length - a.length; });
-  return words[0] || "anime";
+  return words[0] || "";
 }
 
 // Turn "foo-bar-dublado-todos-os-episodios" → "foo-bar-dublado"
@@ -137,9 +142,20 @@ function stripListSuffix(slug) {
     .replace(/-todos-episodios$/, "");
 }
 
+// Strip trailing qualifiers we add/commonly see: -dublado, -legendado,
+// -2nd-season, -final-season, -(number), so we can compare the "body".
+function slugBody(slug) {
+  return slug
+    .replace(/-dublado$/, "")
+    .replace(/-legendado$/, "")
+    .replace(/-(1st|2nd|3rd|[0-9]+th)-season$/, "")
+    .replace(/-season-[0-9]+$/, "")
+    .replace(/-final-season$/, "")
+    .replace(/-[0-9]+$/, "");
+}
+
 function seasonOrdinalToken(season) {
   if (!season || season <= 1) return "";
-  // Anime-BR usually uses "2nd-season", "3rd-season", "4th-season" ...
   var s = parseInt(season, 10);
   var ord = s + "th";
   if (s === 1) ord = "1st";
@@ -148,19 +164,62 @@ function seasonOrdinalToken(season) {
   return ord + "-season";
 }
 
-// Score a slug vs a list of tokens from the title (prefer slugs that include more tokens)
-function scoreSlug(slug, tokens) {
-  var score = 0;
-  for (var i = 0; i < tokens.length; i++) {
-    if (tokens[i] && slug.indexOf(tokens[i]) !== -1) score += 1;
+// ─────────────────────────────────────────────
+// Strict slug <-> title matching
+// ─────────────────────────────────────────────
+//
+// A slug is considered a valid candidate if EITHER:
+//   (a) its "body" (without trailing season/dubbed markers) starts with one
+//       of the expected slug roots (built from TMDB titles), OR
+//   (b) its body equals a title slug entirely, OR
+//   (c) for single-word titles, the body equals the title token exactly
+//       (e.g. "naruto" matches "naruto", "naruto-dublado", but NOT
+//       "naruto-shippuden" unless user asked for shippuden).
+//
+// This avoids "dear-boys-dublado" matching "The Boys" (score by token
+// intersection was 1/1 = 100% previously, which was wrong).
+function isStrictMatch(slug, expectedRoots, strongTokens) {
+  if (!slug) return false;
+  var body = slugBody(stripListSuffix(slug));
+
+  // (a) body starts with a known root (tightest possible)
+  for (var i = 0; i < expectedRoots.length; i++) {
+    var root = expectedRoots[i];
+    if (!root) continue;
+    if (body === root) return true;
+    if (body.indexOf(root + "-") === 0) return true;
   }
-  if (/-dublado/.test(slug)) score += 0.25; // slight preference for dubbed
-  if (/-todos-os-episodios/.test(slug)) score += 0.1; // search-result slug
-  return score;
+
+  // (b) body contains a root as a "word" boundary anywhere ("-root-" or
+  //     "-root" at end). Covers "fullmetal-alchemist-brotherhood-dublado"
+  //     vs root "fullmetal-alchemist".
+  for (var j = 0; j < expectedRoots.length; j++) {
+    var r2 = expectedRoots[j];
+    if (!r2 || r2.length < 6) continue; // avoid short roots (e.g. "naruto" ok, "the" not)
+    if (body.indexOf("-" + r2 + "-") !== -1) return true;
+    if (body.length > r2.length && body.substring(body.length - r2.length - 1) === "-" + r2) return true;
+  }
+
+  // (c) For multi-token titles, accept if a **majority** of the strong
+  //     tokens (>=4 chars, non-stopword) appear in the slug, with a
+  //     minimum of 2 matches. This catches romaji variants such as:
+  //       "Demon Slayer: Kimetsu no Yaiba" → "kimetsu-no-yaiba-*"
+  //       (2 of 4 strong tokens match)
+  //     but rejects "dear-boys-dublado" for "The Boys" (strongTokens=[boys], only 1).
+  if (strongTokens && strongTokens.length >= 2) {
+    var hits = 0;
+    for (var k = 0; k < strongTokens.length; k++) {
+      if (body.indexOf(strongTokens[k]) !== -1) hits++;
+    }
+    var needed = Math.max(2, Math.ceil(strongTokens.length * 0.5));
+    if (hits >= needed) return true;
+  }
+
+  return false;
 }
 
 // ─────────────────────────────────────────────
-// TMDB
+// TMDB — includes origin info so we can refuse non-anime titles
 // ─────────────────────────────────────────────
 function getTmdbInfo(tmdbId, type) {
   return __async(this, null, function* () {
@@ -169,19 +228,52 @@ function getTmdbInfo(tmdbId, type) {
     var ptRes = yield fetchJson(base + "?api_key=" + TMDB_API_KEY + "&language=pt-BR");
     if (!ptRes.data) return null;
     var d = ptRes.data;
+
+    var origin = d.origin_country || [];
+    var genres = (d.genres || []).map(function (g) { return g.name; });
+    var isJapaneseOrigin =
+      d.original_language === "ja" ||
+      origin.indexOf("JP") !== -1 ||
+      origin.indexOf("JA") !== -1;
+    var isAnime = isJapaneseOrigin;
+
+    // Fetch alternative titles (gives us romaji aliases like "Shingeki no
+    // Kyojin" for "Attack on Titan"). This is optional — if it fails we
+    // still work with title + originalTitle.
+    var altTitles = [];
+    var altRes = yield fetchJson(base + "/alternative_titles?api_key=" + TMDB_API_KEY);
+    if (altRes && altRes.data) {
+      var results = altRes.data.results || altRes.data.titles || [];
+      for (var i = 0; i < results.length; i++) {
+        var r = results[i];
+        if (!r || !r.title) continue;
+        // Keep romaji / english / portuguese aliases; skip Chinese/Korean/etc.
+        var c = (r.iso_3166_1 || "").toUpperCase();
+        if (c === "JP" || c === "US" || c === "GB" || c === "BR" || c === "PT") {
+          altTitles.push(r.title);
+        }
+      }
+    }
+
     return {
       title: d.title || d.name || "",
       originalTitle: d.original_title || d.original_name || "",
+      altTitles: altTitles,
       year: ((d.release_date || d.first_air_date || "").split("-")[0]) || null,
+      originalLanguage: d.original_language || "",
+      originCountry: origin,
+      genres: genres,
+      isAnime: isAnime,
     };
   });
 }
 
 // ─────────────────────────────────────────────
-// Search animefire
+// Search animefire (lowercase single-word search is the most reliable)
 // ─────────────────────────────────────────────
 function searchSlugs(word) {
   return __async(this, null, function* () {
+    if (!word) return [];
     var url = BASE_URL + "/pesquisar/" + encodeURIComponent(word);
     var res = yield fetchText(url);
     if (!res || !res.text || res.status !== 200 || res.text.length < 2000) return [];
@@ -214,31 +306,57 @@ function fetchEpisodeSources(slug, episode) {
 }
 
 // ─────────────────────────────────────────────
-// Build list of candidate slugs to try
+// Build list of expected slug roots (for strict matching)
 // ─────────────────────────────────────────────
-function buildCandidateSlugs(tmdbInfo, season) {
+function buildExpectedRoots(tmdbInfo, season) {
+  var titles = [tmdbInfo.title, tmdbInfo.originalTitle]
+    .concat(tmdbInfo.altTitles || [])
+    .filter(Boolean);
+  var roots = [];
+  var seen = {};
+  function push(s) { if (s && !seen[s]) { seen[s] = 1; roots.push(s); } }
+  for (var i = 0; i < titles.length; i++) {
+    var base = slugify(titles[i]);
+    if (!base) continue;
+    push(base);
+    // Variant without leading "the"
+    push(base.replace(/^the-/, ""));
+    // Variant after colon (e.g. "Demon Slayer: Kimetsu no Yaiba" → "kimetsu-no-yaiba")
+    var afterColon = titles[i].indexOf(":") !== -1
+      ? titles[i].split(":").slice(1).join(":")
+      : "";
+    if (afterColon) {
+      var slug = slugify(afterColon);
+      if (slug) push(slug);
+    }
+  }
+  return roots;
+}
+
+// ─────────────────────────────────────────────
+// Build list of candidate slugs to try (direct guesses)
+// ─────────────────────────────────────────────
+function buildDirectCandidates(tmdbInfo, season) {
   var titles = [tmdbInfo.title, tmdbInfo.originalTitle].filter(Boolean);
   var direct = [];
   var seen = {};
-  function push(s) {
-    if (s && !seen[s]) { seen[s] = 1; direct.push(s); }
-  }
-  // Direct slugs from both titles
+  function push(s) { if (s && !seen[s]) { seen[s] = 1; direct.push(s); } }
   for (var i = 0; i < titles.length; i++) {
     var base = slugify(titles[i]);
     if (!base) continue;
     push(base);
     push(base + "-dublado");
+    push(base + "-legendado");
     var ord = seasonOrdinalToken(season);
     if (ord) {
       push(base + "-" + ord);
       push(base + "-" + ord + "-dublado");
       push(base + "-season-" + season);
     }
-    // "second-season" / "final-season" fallbacks
     if (season && season > 1) {
       push(base + "-final-season");
       push(base + "-" + season);
+      push(base + "-" + season + "-dublado");
     }
   }
   return direct;
@@ -257,7 +375,7 @@ function labelToQuality(label) {
   return String(label);
 }
 
-function toStream(sourceItem, info, slug, season, episode) {
+function toStream(sourceItem, info, slug, season, episode, relevance) {
   var isHls = sourceItem.src.indexOf(".m3u8") !== -1;
   var quality = labelToQuality(sourceItem.label);
   var titleBase =
@@ -267,6 +385,7 @@ function toStream(sourceItem, info, slug, season, episode) {
     ? " · EP" + (season > 1 ? "S" + season + "E" + episode : String(episode))
     : "";
   return {
+    _relevance: relevance || 0,
     name: PROVIDER_TAG + " · MP4",
     title: titleBase + epTag + " · " + slug + " [PT-BR]",
     quality: quality,
@@ -298,45 +417,62 @@ function getStreams(tmdbId, type, season, episode) {
       var info = yield getTmdbInfo(tmdbId, type);
       if (!info || (!info.title && !info.originalTitle)) return [];
 
+      // GATE: only run for anime-ish content. Otherwise we risk returning
+      // a random anime that shares a word with the title.
+      if (!info.isAnime) {
+        console.log(
+          "[" + PROVIDER_TAG + "] skipping non-anime title: " +
+          (info.title || info.originalTitle) +
+          " (lang=" + info.originalLanguage +
+          ", origin=" + (info.originCountry || []).join(",") + ")"
+        );
+        return [];
+      }
+
       console.log(
-        "[" + PROVIDER_TAG + "] " + type + " " +
+        "[" + PROVIDER_TAG + "] anime " + type + " " +
         (info.title || info.originalTitle) + " (" + (info.year || "?") + ")"
       );
 
-      // 1) direct slug guesses
-      var candidates = buildCandidateSlugs(info, season);
-
-      // 2) plus slugs discovered via search
-      var searchWords = [];
-      if (info.title) searchWords.push(pickSearchWord(info.title));
-      if (info.originalTitle) {
-        var w2 = pickSearchWord(info.originalTitle);
-        if (searchWords.indexOf(w2) === -1) searchWords.push(w2);
+      var expectedRoots = buildExpectedRoots(info, season);
+      // Strong tokens: 4+ chars, non-stopword, pulled from ALL known
+      // titles (pt, original, romaji alternatives).
+      var strongTokens = [];
+      var tokenSource = [info.title, info.originalTitle].concat(info.altTitles || []);
+      var seenTok = {};
+      for (var si = 0; si < tokenSource.length; si++) {
+        var toks = tokensOf(tokenSource[si], 4);
+        for (var ti = 0; ti < toks.length; ti++) {
+          if (!seenTok[toks[ti]]) { seenTok[toks[ti]] = 1; strongTokens.push(toks[ti]); }
+        }
       }
 
-      var titleTokens = (
-        normalize(info.title) + " " + normalize(info.originalTitle)
-      )
-        .split(" ")
-        .filter(function (w) { return w && !STOPWORDS[w] && w.length >= 3; });
+      // 1) direct guesses (always strict-pass)
+      var candidates = buildDirectCandidates(info, season);
+
+      // 2) plus slugs discovered via search, but filtered through isStrictMatch
+      var searchWords = [];
+      var allTitlesForSearch = [info.title, info.originalTitle].concat(info.altTitles || []);
+      for (var ws = 0; ws < allTitlesForSearch.length; ws++) {
+        var w = pickSearchWord(allTitlesForSearch[ws]);
+        if (w && searchWords.indexOf(w) === -1) searchWords.push(w);
+      }
 
       for (var s = 0; s < searchWords.length; s++) {
         var slugs = yield searchSlugs(searchWords[s]);
-        slugs.sort(function (a, b) {
-          return scoreSlug(b, titleTokens) - scoreSlug(a, titleTokens);
-        });
-        // keep the top 10 scored entries
-        var top = slugs.slice(0, 10);
-        for (var t = 0; t < top.length; t++) {
-          var rawSlug = top[t];
-          var clean = stripListSuffix(rawSlug);
+        for (var t = 0; t < slugs.length; t++) {
+          var raw = slugs[t];
+          var clean = stripListSuffix(raw);
+          // Require strict match — no more false positives.
+          if (!isStrictMatch(clean, expectedRoots, strongTokens)) continue;
           if (candidates.indexOf(clean) === -1) candidates.push(clean);
-          if (candidates.indexOf(rawSlug) === -1) candidates.push(rawSlug);
+          if (candidates.indexOf(raw) === -1) candidates.push(raw);
         }
       }
 
       console.log(
-        "[" + PROVIDER_TAG + "] trying " + candidates.length + " slug candidates"
+        "[" + PROVIDER_TAG + "] " + candidates.length +
+        " candidates (roots=" + JSON.stringify(expectedRoots) + ")"
       );
 
       var ep = type === "tv" ? (episode || 1) : 1;
@@ -352,23 +488,44 @@ function getStreams(tmdbId, type, season, episode) {
         tried++;
         var r = yield fetchEpisodeSources(slug, ep);
         if (!r) continue;
+        // Double-check: the resolved slug must still strict-match the title.
+        if (!isStrictMatch(slug, expectedRoots, strongTokens)) continue;
+
+        // Compute relevance: body starts-with a root > body-contains-root > token-only match.
+        var body = slugBody(stripListSuffix(slug));
+        var relevance = 0;
+        for (var rr = 0; rr < expectedRoots.length; rr++) {
+          var root = expectedRoots[rr];
+          if (!root) continue;
+          if (body === root) { relevance = Math.max(relevance, 100); break; }
+          if (body.indexOf(root + "-") === 0) { relevance = Math.max(relevance, 90); break; }
+          if (body.indexOf("-" + root + "-") !== -1) relevance = Math.max(relevance, 70);
+        }
+        if (!relevance) relevance = 50; // token-only match
+
         console.log(
           "[" + PROVIDER_TAG + "] OK slug=" + slug + " ep=" + ep +
-          " sources=" + r.sources.length
+          " sources=" + r.sources.length + " rel=" + relevance
         );
         for (var i = 0; i < r.sources.length; i++) {
-          streams.push(toStream(r.sources[i], info, slug, season, ep));
+          streams.push(toStream(r.sources[i], info, slug, season, ep, relevance));
         }
-        // once we have found at least one working slug with 2+ qualities, stop
-        if (streams.length >= 3) break;
+        // Stop once we have at least one high-relevance match with multiple qualities.
+        if (streams.length >= 3 && relevance >= 90) break;
+        if (streams.length >= 6) break;
       }
 
-      // Sort by quality desc (1080 > 720 > 360)
+      // Sort: highest relevance first, then highest quality.
       streams.sort(function (a, b) {
+        if (a._relevance !== b._relevance) return b._relevance - a._relevance;
         var qa = parseInt(String(a.quality).replace("p", ""), 10) || 0;
         var qb = parseInt(String(b.quality).replace("p", ""), 10) || 0;
         return qb - qa;
       });
+      // Strip internal fields before returning.
+      streams = streams.map(function (s) { delete s._relevance; return s; });
+      // Cap to 6 to keep the UI clean.
+      if (streams.length > 6) streams = streams.slice(0, 6);
 
       console.log(
         "[" + PROVIDER_TAG + "] total streams: " + streams.length
