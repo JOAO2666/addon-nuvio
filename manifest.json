@@ -1,15 +1,15 @@
 {
   "id": "br.nuvio.streams",
   "name": "Streams Brasil (Multi-Fonte)",
-  "version": "3.1.0",
-  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix/OverFlix/VisionCine HLS) + AnimeFire (MP4 direto) + AnimesDigital (HLS direto). Filmes, séries e animes dublados/legendados.",
+  "version": "3.2.0",
+  "description": "Coleção de providers PT-BR para o Nuvio: RedeCanais + VideasyBR (SuperFlix HLS) + AnimeFire (MP4 direto) + AnimesDigital (HLS direto). Filmes, séries e animes dublados/legendados. v3.2: resposta ~4x mais rápida em séries (paralelizou extração, removeu upstreams quebrados), sem mais timeout de 'no streams found'.",
   "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
   "scrapers": [
     {
       "id": "redecanais",
       "name": "RedeCanais",
-      "description": "RedeCanais HD (.autos) - Filmes, séries e animes dublados/legendados em PT-BR. Extrai URL direta (.mp4) de MixDrop + StreamTape para tocar no player nativo.",
-      "version": "3.0.0",
+      "description": "RedeCanais HD (.autos) - Filmes, séries e animes dublados/legendados em PT-BR. Extrai URL direta (.mp4) de MixDrop + StreamTape para tocar no player nativo. v3.1: paraleliza extração + pula hosts quebrados (Filemoon/DoodStream) → séries em ~2.6s.",
+      "version": "3.1.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",
@@ -30,8 +30,8 @@
     {
       "id": "redecanais-ph",
       "name": "RedeCanais PH",
-      "description": "RedeCanais PH - Mirror alternativo do RedeCanais (pode ser bloqueado por Cloudflare em alguns dispositivos). Extrai URL direta de MixDrop + StreamTape.",
-      "version": "3.0.0",
+      "description": "RedeCanais PH - Mirror alternativo do RedeCanais (pode ser bloqueado por Cloudflare em alguns dispositivos). Extrai URL direta de MixDrop + StreamTape. v3.1: extração paralela e fail-fast (<0.5s quando Cloudflare bloqueia).",
+      "version": "3.1.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",
@@ -52,8 +52,8 @@
     {
       "id": "videasy-br",
       "name": "Videasy BR",
-      "description": "Agrega os players BR da Videasy (SuperFlix, OverFlix, VisionCine). Retorna HLS multi-áudio (.m3u8) já com faixa em português — plugado direto no player nativo do Nuvio, sem iframe.",
-      "version": "1.0.0",
+      "description": "SuperFlix via api.videasy.net. Retorna HLS multi-áudio (.m3u8) já com faixa em português — plugado direto no player nativo do Nuvio, sem iframe. v1.1: removidos OverFlix/VisionCine (upstream quebrado retornava 500 após 30s) + timeout agressivo de 8s → responde em ~0.8s.",
+      "version": "1.1.0",
       "author": "Nuvio BR",
       "supportedTypes": [
         "movie",

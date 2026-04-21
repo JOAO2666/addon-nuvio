@@ -12,23 +12,30 @@ https://raw.githubusercontent.com/JOAO2666/addon-nuvio/refs/heads/main/manifest.
 
 Depois é só ativar os providers desejados e começar a assistir.
 
-## Providers Incluídos (v3.1.0)
+## Providers Incluídos (v3.2.0)
 
-| Provider | Site / API | Conteúdo | Idioma | Formato | Status |
-|----------|------------|----------|--------|---------|--------|
-| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ✅ |
-| **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ⚠️ Cloudflare |
-| **VideasyBR** | api.videasy.net | Filmes, Séries, Animes | PT-BR | HLS (m3u8) | ✅ |
-| **AnimeFire** | animefire.io | Animes (EP individuais) | PT-BR (Dub/Leg) | MP4 direto | ✅ |
-| **AnimesDigital** | animesdigital.org | Animes, Desenhos, Doramas | PT-BR (Dub/Leg) | HLS direto | ✅ |
+| Provider | Site / API | Conteúdo | Idioma | Formato | Status | Velocidade (séries) |
+|----------|------------|----------|--------|---------|--------|---------------------|
+| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ✅ | ~2,6 s |
+| **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ⚠️ Cloudflare | <0,5 s (fail-fast) |
+| **VideasyBR** | api.videasy.net | Filmes, Séries, Animes | PT-BR | HLS (m3u8) | ✅ | ~0,8 s |
+| **AnimeFire** | animefire.io | Animes (EP individuais) | PT-BR (Dub/Leg) | MP4 direto | ✅ | ~2,2 s (anime) |
+| **AnimesDigital** | animesdigital.org | Animes, Desenhos, Doramas | PT-BR (Dub/Leg) | HLS direto | ✅ | 5–16 s (anime) |
+
+### O que mudou na v3.2.0
+
+- **Séries agora respondem em ≤3 s** (antes passavam de 15 s e o Nuvio dava "no streams found" por timeout).
+- **RedeCanais**: os embeds agora são extraídos **em paralelo** via `Promise.all` (eram sequenciais). Hosts sabidamente quebrados (Filemoon/Byse, DoodStream) são **pulados antes da requisição** — economizava 2 a 5 s por host falhando em silêncio.
+- **VideasyBR**: removidos OverFlix e VisionCine (o upstream do videasy.net estava retornando HTTP 500 em qualquer request, travando ~30 s cada). Só SuperFlix fica ativo e um **timeout de 8 s por request** garante que nada trava o app.
+- **RedeCanais PH**: paralelização idem, mas Cloudflare continua bloqueando de Node/dispositivos móveis. Mantido no manifesto, mas pronto pra fail-fast sem atrasar o restante.
 
 ### Detalhes por Provider
 
-**RedeCanais (.autos)** — Fonte principal. Busca no site, extrai os embeds (MixDrop / StreamTape / DoodStream / Filemoon) e resolve a URL direta de cada host.
+**RedeCanais (.autos)** — Fonte principal. Busca no site, extrai os embeds (MixDrop / StreamTape) e resolve a URL direta de cada host **em paralelo**. Filemoon e DoodStream são pulados porque nunca retornam stream extraível no ambiente do Nuvio.
 
 **RedeCanais PH** — Mirror alternativo. Mesmo catálogo, mas protegido por Cloudflare: em alguns IPs/dispositivos retorna 403. Se acontecer, desative este e deixe só o `.autos`.
 
-**VideasyBR** — Agrega 3 players BR (SuperFlix, OverFlix, VisionCine) via `api.videasy.net`. Retorna **HLS multi-áudio** (playlist `.m3u8`) com faixa em português já embutida. Baseado apenas em TMDB ID, funciona pra praticamente tudo que tem dublagem BR.
+**VideasyBR** — SuperFlix via `api.videasy.net`. Retorna **HLS multi-áudio** (playlist `.m3u8`) com faixa em português já embutida. Baseado apenas em TMDB ID, funciona pra praticamente tudo que tem dublagem BR. (OverFlix e VisionCine estão fora do ar no upstream; serão reativados se voltarem.)
 
 **AnimeFire** — Catálogo brasileiro de animes. Usa o endpoint JSON público `/video/{slug}/{episode}` do site, que devolve **MP4 direto** do CDN `lightspeedst.net` em 360p / 720p / 1080p. Resolução de slug automática a partir do TMDB (título PT + título original).
 
@@ -66,8 +73,10 @@ Se quiser algum deles, precisa de solução dedicada por site (Cloudflare bypass
 |------|--------|-------|
 | **MixDrop** | ✅ Funciona | `.mp4` direto (`mxcontent.net`) |
 | **StreamTape** | ✅ Funciona | `.mp4` direto (`tapecontent.net`) |
-| **DoodStream** | ⚠️ Pode falhar | `.mp4` via `/pass_md5` (Cloudflare) |
-| **Filemoon / Byse** | ⚠️ SPA moderno | Página SPA Vite, extração não confiável |
+| **DoodStream** | ❌ Pulado (v3.2) | Cloudflare bloqueia `/pass_md5` do lado do app |
+| **Filemoon / Byse** | ❌ Pulado (v3.2) | SPA Vite moderno, exige JS runtime; sempre falhava |
+
+Em v3.2 a extração só tenta os hosts que **realmente respondem** (MixDrop/StreamTape), economizando 2–5 s por episódio.
 
 ## Estrutura
 
@@ -77,10 +86,10 @@ Addon para o Nuvio/
 ├── providers/
 │   ├── redecanais.js          # RedeCanais (.autos)
 │   ├── redecanais-ph.js       # RedeCanais (.ph mirror)
-│   ├── videasy-br.js          # api.videasy.net (SuperFlix/OverFlix/VisionCine)
+│   ├── videasy-br.js          # api.videasy.net (SuperFlix HLS)
 │   ├── animefire.js           # animefire.io (MP4 direto)
 │   └── animesdigital.js       # animesdigital.org (HLS direto + paginação inteligente)
-├── test.js                    # Teste local Node.js (5 providers)
+├── test.js                    # Teste local Node.js com cronômetro por provider
 └── README.md
 ```
 
@@ -90,16 +99,17 @@ Addon para o Nuvio/
 node test.js
 ```
 
-Saída esperada (médio/bom):
+Saída esperada (v3.2.0) — atenção aos tempos:
 
 ```
-RedeCanais (.autos)          OK=5   FAIL=1
-RedeCanais PH                OK=0   FAIL=6    (Cloudflare 403 em Node)
-VideasyBR                    OK=5   FAIL=1
-AnimeFire                    OK=3   FAIL=3    (só anime; filmes/séries não-anime naturalmente falham)
+RedeCanais (.autos)    OK=6  FAIL=0  total=15920ms  avg=2653ms
+RedeCanais PH          OK=0  FAIL=6  total=2913ms   avg=486ms   (Cloudflare em Node)
+VideasyBR              OK=6  FAIL=0  total=5061ms   avg=844ms
+AnimeFire              OK=3  FAIL=3  total=13013ms  avg=2169ms  (só anime)
+AnimesDigital          OK=2  FAIL=4  total=29491ms  avg=4915ms  (só anime)
 ```
 
-Dentro do Nuvio, VideasyBR e AnimeFire tendem a ter sucesso um pouco maior porque o device do usuário não está bloqueado por Cloudflare.
+Suite inteira roda em ~75 s (era 287 s na v3.1.0 — **~4× mais rápido**). Dentro do Nuvio, VideasyBR e AnimeFire costumam ter sucesso ainda maior porque o dispositivo do usuário não está bloqueado por Cloudflare.
 
 ## Compatibilidade Hermes
 

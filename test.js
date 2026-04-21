@@ -41,21 +41,27 @@ function showStreams(streams) {
 
 async function runOn(label, mod) {
   console.log("\n================ " + label + " ================");
-  var passed = 0, failed = 0;
+  var passed = 0, failed = 0, totalMs = 0;
   for (var i = 0; i < tests.length; i++) {
     var t = tests[i];
     console.log("\n--- " + t.name + " ---");
+    var t0 = Date.now();
     try {
       var streams = await mod.getStreams(t.tmdbId, t.type, t.season || null, t.episode || null);
+      var dt = Date.now() - t0;
+      totalMs += dt;
+      console.log("  (took " + dt + "ms)");
       showStreams(streams);
       if (streams && streams.length > 0) passed++; else failed++;
     } catch (e) {
-      console.log("  ERRO: " + (e && e.message));
+      var dt2 = Date.now() - t0;
+      totalMs += dt2;
+      console.log("  ERRO: " + (e && e.message) + " (took " + dt2 + "ms)");
       failed++;
     }
   }
-  console.log("\n[SUMÁRIO " + label + "] passed=" + passed + " / failed=" + failed);
-  return { label: label, passed: passed, failed: failed };
+  console.log("\n[SUMÁRIO " + label + "] passed=" + passed + " / failed=" + failed + " / total=" + totalMs + "ms avg=" + Math.round(totalMs / tests.length) + "ms");
+  return { label: label, passed: passed, failed: failed, totalMs: totalMs };
 }
 
 (async function () {
@@ -67,7 +73,8 @@ async function runOn(label, mod) {
   console.log("\n================ RESULTADO GERAL ================");
   totals.forEach(function (t) {
     console.log(
-      "  " + t.label.padEnd(26) + "  OK=" + t.passed + "  FAIL=" + t.failed
+      "  " + t.label.padEnd(26) + "  OK=" + t.passed + "  FAIL=" + t.failed +
+      "  total=" + t.totalMs + "ms  avg=" + Math.round(t.totalMs / tests.length) + "ms"
     );
   });
 })().catch(function (e) { console.error(e); process.exit(1); });

@@ -289,22 +289,29 @@ function extractDoodStream(embedUrl) {
   });
 }
 
+// Known-broken hosts (same as redecanais.js): skip to save seconds per title.
+var SKIP_HOSTS_PH = {
+  filemoon: 1, byse: 1, doodstream: 1, dood: 1,
+};
+
+function isSkippableHostPh(server, embedUrl) {
+  var s = (server || "").toLowerCase();
+  if (SKIP_HOSTS_PH[s]) return true;
+  if (/filemoon|bysebuho|byse\.|dood(stream|\.|s\.)|myvidplay/i.test(embedUrl || "")) return true;
+  return false;
+}
+
 function extractDirectFromHost(server, embedUrl) {
   return __async(this, null, function* () {
     var s = (server || "").toLowerCase();
-    if (s === "filemoon" || s === "byse" || embedUrl.indexOf("filemoon") !== -1 || embedUrl.indexOf("byse") !== -1) {
-      return yield extractFilemoon(embedUrl);
-    }
+    if (isSkippableHostPh(s, embedUrl)) return null;
     if (s === "mixdrop" || embedUrl.indexOf("mixdrop") !== -1 || embedUrl.indexOf("mdbekjwqa") !== -1 || embedUrl.indexOf("md3b0j6hj") !== -1) {
       return yield extractMixDrop(embedUrl);
     }
     if (s === "streamtape" || embedUrl.indexOf("streamtape") !== -1) {
       return yield extractStreamTape(embedUrl);
     }
-    if (s === "doodstream" || s === "dood" || /dood(?:\.|stream|s\.)/i.test(embedUrl)) {
-      return yield extractDoodStream(embedUrl);
-    }
-    return yield extractFilemoon(embedUrl);
+    return null;
   });
 }
 
@@ -417,20 +424,35 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         season: seasonNum, episode: episodeNum,
       };
 
-      var streams = [];
-      for (var i = 0; i < embedInfo.embeds.length; i++) {
-        var emb = embedInfo.embeds[i];
-        var canonical = yield resolveRedirect(emb, embedInfo.playerUrl);
-        if (!canonical) continue;
-        var hostDomain = "";
-        var hostMatch = canonical.match(/^https?:\/\/([^\/]+)/);
-        if (hostMatch) hostDomain = hostMatch[1];
-        var direct = yield extractDirectFromHost(emb.server, canonical);
-        if (direct) {
-          streams.push(buildStream(direct, emb.server, hostDomain, embedInfo, mediaInfo));
-          console.log("[" + PROVIDER_TAG + "] ✓ " + emb.server + " -> " + direct.substring(0, 80));
-        }
+      // Drop known-broken hosts before hitting the network, then extract
+      // the remaining embeds in parallel.
+      var usable = [];
+      for (var fi = 0; fi < embedInfo.embeds.length; fi++) {
+        var em = embedInfo.embeds[fi];
+        if (!isSkippableHostPh(em.server, em.url)) usable.push(em);
       }
+
+      var tasks = usable.map(function (emb) {
+        return (function () {
+          return __async(null, null, function* () {
+            var canonical = yield resolveRedirect(emb, embedInfo.playerUrl);
+            if (!canonical) return null;
+            var hostMatch = canonical.match(/^https?:\/\/([^\/]+)/);
+            var hostDomain = hostMatch ? hostMatch[1] : "";
+            var direct = yield extractDirectFromHost(emb.server, canonical);
+            if (!direct) return null;
+            console.log("[" + PROVIDER_TAG + "] ✓ " + emb.server + " -> " + direct.substring(0, 80));
+            return buildStream(direct, emb.server, hostDomain, embedInfo, mediaInfo);
+          });
+        })();
+      });
+
+      var settled = yield Promise.all(tasks);
+      var streams = [];
+      for (var si = 0; si < settled.length; si++) {
+        if (settled[si]) streams.push(settled[si]);
+      }
+
       console.log("[" + PROVIDER_TAG + "] returning " + streams.length + " streams");
       return streams;
     } catch (e) {

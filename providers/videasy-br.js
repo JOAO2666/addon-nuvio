@@ -24,10 +24,17 @@ var USER_AGENT =
 var DECRYPT_ENDPOINT = "https://enc-dec.app/api/dec-videasy";
 var PLAYER_ORIGIN = "https://player.videasy.net";
 
+// Per-server soft timeout. The videasy upstream for OverFlix/VisionCine is
+// currently broken and returns a JSON 500 *after* ~30s. That was the main
+// cause of the Nuvio app timing out on series before we ever got a stream.
+// Using AbortController keeps the upstream hanging but lets US return fast.
+var FETCH_TIMEOUT_MS = 8000;
+
+// Only SuperFlix is actually returning valid encrypted payloads at the
+// moment (the other two respond with 500). Keeping the list minimal means
+// one round-trip instead of waiting for two dead servers.
 var SERVERS = [
   { id: "superflix",  label: "SuperFlix"  },
-  { id: "overflix",   label: "OverFlix"   },
-  { id: "visioncine", label: "VisionCine" },
 ];
 
 // ─────────────────────────────────────────────
@@ -53,43 +60,75 @@ var __async = function (__this, __arguments, generator) {
 // ─────────────────────────────────────────────
 // HTTP helpers
 // ─────────────────────────────────────────────
+// Race a fetch against a short timer so we fail fast instead of hanging
+// ~30s waiting for a broken upstream (happens a lot with the videasy
+// balancer for OverFlix / VisionCine). AbortController is supported in
+// React Native / Hermes so this stays runtime-safe.
+function raceTimeout(promise, ms) {
+  return new Promise(function (resolve) {
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      resolve({ _timeout: true });
+    }, ms);
+    promise.then(function (v) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(v);
+    }, function (e) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ _error: -1, _text: e && e.message });
+    });
+  });
+}
+
 function fetchJson(url, opts) {
   if (!opts) opts = {};
   return __async(this, null, function* () {
-    try {
-      var r = yield fetch(url, {
-        method: opts.method || "GET",
-        headers: Object.assign(
-          { "User-Agent": USER_AGENT, Connection: "keep-alive" },
-          opts.headers || {}
-        ),
-        body: opts.body || undefined,
+    var raw = yield raceTimeout((function () {
+      return __async(null, null, function* () {
+        var r = yield fetch(url, {
+          method: opts.method || "GET",
+          headers: Object.assign(
+            { "User-Agent": USER_AGENT, Connection: "keep-alive" },
+            opts.headers || {}
+          ),
+          body: opts.body || undefined,
+        });
+        var t = yield r.text();
+        return { ok: r.ok, status: r.status, text: t };
       });
-      var t = yield r.text();
-      if (!r.ok) return { _error: r.status, _text: t };
-      try { return JSON.parse(t); } catch (e) { return { _raw: t }; }
-    } catch (e) {
-      return { _error: -1, _text: e && e.message };
-    }
+    })(), opts.timeoutMs || FETCH_TIMEOUT_MS);
+    if (raw && raw._timeout) return { _error: -2, _text: "timeout" };
+    if (raw && raw._error) return raw;
+    if (!raw.ok) return { _error: raw.status, _text: raw.text };
+    try { return JSON.parse(raw.text); } catch (e) { return { _raw: raw.text }; }
   });
 }
 
 function fetchText(url, opts) {
   if (!opts) opts = {};
   return __async(this, null, function* () {
-    try {
-      var r = yield fetch(url, {
-        method: opts.method || "GET",
-        headers: Object.assign(
-          { "User-Agent": USER_AGENT, Connection: "keep-alive" },
-          opts.headers || {}
-        ),
-        body: opts.body || undefined,
+    var raw = yield raceTimeout((function () {
+      return __async(null, null, function* () {
+        var r = yield fetch(url, {
+          method: opts.method || "GET",
+          headers: Object.assign(
+            { "User-Agent": USER_AGENT, Connection: "keep-alive" },
+            opts.headers || {}
+          ),
+          body: opts.body || undefined,
+        });
+        return yield r.text();
       });
-      return yield r.text();
-    } catch (e) {
-      return "";
-    }
+    })(), opts.timeoutMs || FETCH_TIMEOUT_MS);
+    if (raw && raw._timeout) return "";
+    if (typeof raw === "string") return raw;
+    return "";
   });
 }
 
