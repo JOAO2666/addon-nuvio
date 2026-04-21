@@ -1,0 +1,50 @@
+{
+  "name": "RedeCanais Brasil",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "redecanais",
+      "name": "RedeCanais",
+      "description": "RedeCanais HD - Filmes e Séries Dublados e Legendados em PT-BR com múltiplos servidores (Filemoon, MixDrop, StreamTape, DoodStream)",
+      "version": "1.0.0",
+      "author": "Nuvio BR",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/redecanais.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=redecanaistv.autos&sz=128",
+      "contentLanguage": [
+        "pt"
+      ]
+    },
+    {
+      "id": "redecanais-ph",
+      "name": "RedeCanais PH",
+      "description": "RedeCanais PH - Mirror alternativo com filmes e séries dublados e legendados em PT-BR",
+      "version": "1.0.0",
+      "author": "Nuvio BR",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/redecanais-ph.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=redecanais.ph&sz=128",
+      "contentLanguage": [
+        "pt"
+      ]
+    }
+  ]
+}
