@@ -1,8 +1,6 @@
-# RedeCanais Brasil - Addon para Nuvio
+# Streams Brasil (Multi-Fonte) - Addon para Nuvio
 
-Addon de providers para o app **Nuvio** que busca filmes, séries e animes dublados/legendados em PT-BR a partir dos sites **RedeCanais**.
-
-Diferente de outros providers, este **resolve as URLs diretas dos hosts** (MixDrop, StreamTape) em vez de retornar apenas as páginas embed — isso evita o erro "source player" / "player não suportado" que acontece quando o Nuvio tenta tocar uma página HTML como vídeo.
+Coleção de providers PT-BR para o app **Nuvio**. Busca filmes, séries e animes **dublados/legendados em português do Brasil** em múltiplas fontes simultaneamente, entregando **URL direta** de vídeo (`.mp4` / `.m3u8`) para o player nativo — sem iframe, sem erro de "source player".
 
 ## Instalação no Nuvio
 
@@ -12,20 +10,40 @@ No app Nuvio, vá em **Settings → Plugins → Add Repository** e cole:
 https://raw.githubusercontent.com/JOAO2666/addon-nuvio/refs/heads/main/manifest.json
 ```
 
-Depois ative os providers desejados e já pode usar.
+Depois é só ativar os providers desejados e começar a assistir.
 
-## Providers Incluídos
+## Providers Incluídos (v3.0.0)
 
-| Provider | Site | Conteúdo | Idioma |
-|----------|------|----------|--------|
-| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) |
-| **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) |
+| Provider | Site / API | Conteúdo | Idioma | Formato | Status |
+|----------|------------|----------|--------|---------|--------|
+| **RedeCanais** | redecanaistv.autos | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ✅ |
+| **RedeCanais PH** | redecanais.ph | Filmes, Séries, Animes | PT-BR (Dub/Leg) | MP4 / M3U8 | ⚠️ Cloudflare |
+| **VideasyBR** | api.videasy.net | Filmes, Séries, Animes | PT-BR | HLS (m3u8) | ✅ |
+| **AnimeFire** | animefire.io | Animes (EP individuais) | PT-BR (Dub/Leg) | MP4 direto | ✅ |
 
-> Obs.: o mirror `.ph` é protegido por Cloudflare. Em alguns dispositivos/IPs ele pode retornar 403. Se acontecer, desative o mirror e use apenas o principal.
+### Detalhes por Provider
 
-## Hosts Suportados (extração direta)
+**RedeCanais (.autos)** — Fonte principal. Busca no site, extrai os embeds (MixDrop / StreamTape / DoodStream / Filemoon) e resolve a URL direta de cada host.
 
-O addon busca no RedeCanais, pega os embeds disponíveis e tenta extrair a **URL direta de vídeo** de cada host:
+**RedeCanais PH** — Mirror alternativo. Mesmo catálogo, mas protegido por Cloudflare: em alguns IPs/dispositivos retorna 403. Se acontecer, desative este e deixe só o `.autos`.
+
+**VideasyBR** — Agrega 3 players BR (SuperFlix, OverFlix, VisionCine) via `api.videasy.net`. Retorna **HLS multi-áudio** (playlist `.m3u8`) com faixa em português já embutida. Baseado apenas em TMDB ID, funciona pra praticamente tudo que tem dublagem BR.
+
+**AnimeFire** — Catálogo brasileiro de animes. Usa o endpoint JSON público `/video/{slug}/{episode}` do site, que devolve **MP4 direto** do CDN `lightspeedst.net` em 360p / 720p / 1080p. Resolução de slug automática a partir do TMDB (título PT + título original).
+
+## Cobertura por Tipo
+
+| Tipo                | Melhor Provider                          |
+|---------------------|------------------------------------------|
+| Filme Hollywood     | VideasyBR (HLS) + RedeCanais (MP4)       |
+| Filme Nacional      | RedeCanais + VideasyBR                   |
+| Série               | VideasyBR + RedeCanais                   |
+| Anime dublado       | **AnimeFire** + VideasyBR                |
+| Anime filme         | AnimeFire + RedeCanais                   |
+
+Com os 4 ativos, você costuma ter **3 a 5 streams** diferentes por título, em qualidades variadas.
+
+## Hosts Suportados (RedeCanais)
 
 | Host | Status | Saída |
 |------|--------|-------|
@@ -34,41 +52,17 @@ O addon busca no RedeCanais, pega os embeds disponíveis e tenta extrair a **URL
 | **DoodStream** | ⚠️ Pode falhar | `.mp4` via `/pass_md5` (Cloudflare) |
 | **Filemoon / Byse** | ⚠️ SPA moderno | Página SPA Vite, extração não confiável |
 
-Na prática **MixDrop + StreamTape** já entregam pelo menos 2 streams playáveis para cada filme/episódio — suficiente para o Nuvio.
-
-## Como Funciona
-
-```
-Nuvio → getStreams(tmdbId, "movie"|"tv", season?, episode?)
-   ↓
-Provider consulta TMDB (pt-BR + en-US) para obter título e ano
-   ↓
-Busca /pesquisar/?p=TITULO no RedeCanais
-   ↓
-Filme  → pega a URL correta do filme
-Serie  → pega página da série, lista episódios, acha SxE
-   ↓
-Fetch /?area=online → regex em getembed.php / redirect.php / C_Video()
-   ↓
-Resolve cada redirect.php → URL canônica do host
-   ↓
-Para cada host, executa o extractor dedicado:
-  - MixDrop : GET /e/, unpack p,a,c,k,e,d, lê MDCore.wurl
-  - StreamTape : GET /e/, lê robotlink e monta a URL
-  - DoodStream : GET /e/, acha /pass_md5/, fetch, monta URL
-   ↓
-Retorna streams com URL direta + headers (Referer/Origin)
-```
-
 ## Estrutura
 
 ```
 Addon para o Nuvio/
-├── manifest.json           # Registro dos providers
+├── manifest.json              # Registro dos providers
 ├── providers/
-│   ├── redecanais.js       # Provider principal (redecanaistv.autos)
-│   └── redecanais-ph.js    # Provider mirror (redecanais.ph)
-├── test.js                 # Teste local Node.js
+│   ├── redecanais.js          # RedeCanais (.autos)
+│   ├── redecanais-ph.js       # RedeCanais (.ph mirror)
+│   ├── videasy-br.js          # api.videasy.net (SuperFlix/OverFlix/VisionCine)
+│   └── animefire.js           # animefire.io (MP4 direto)
+├── test.js                    # Teste local Node.js (4 providers)
 └── README.md
 ```
 
@@ -78,20 +72,27 @@ Addon para o Nuvio/
 node test.js
 ```
 
-Saída esperada: `passed=5 failed=0` para `RedeCanais (.autos)` (MixDrop + StreamTape retornando URLs diretas de `.mp4`).
+Saída esperada (médio/bom):
 
-Para testar dentro do Nuvio (Plugin Tester), use um servidor local (`npm start` do repo `nuvio-providers`) ou publique no GitHub e cole a URL raw do `manifest.json`.
+```
+RedeCanais (.autos)          OK=5   FAIL=1
+RedeCanais PH                OK=0   FAIL=6    (Cloudflare 403 em Node)
+VideasyBR                    OK=5   FAIL=1
+AnimeFire                    OK=3   FAIL=3    (só anime; filmes/séries não-anime naturalmente falham)
+```
+
+Dentro do Nuvio, VideasyBR e AnimeFire tendem a ter sucesso um pouco maior porque o device do usuário não está bloqueado por Cloudflare.
 
 ## Compatibilidade Hermes
 
-Os providers são **single-file em ES5** com `async/await` transpilado manualmente para generator + helper `__async`, exatamente como o Hermes/React-Native exige. Sem dependências externas.
+Todos os providers são **single-file em ES5** com `async/await` transpilado manualmente para generator + helper `__async`, exatamente como o Hermes/React-Native exige. Sem dependências externas, sem build step.
 
 ## Aviso Legal
 
-- Este repositório **não hospeda** nenhum conteúdo
-- Os providers apenas indexam conteúdo publicamente disponível em sites de terceiros
-- O uso é de responsabilidade do usuário
-- Para questões DMCA, contate os hosts reais do conteúdo
+- Este repositório **não hospeda** nenhum conteúdo.
+- Os providers apenas indexam conteúdo publicamente disponível em sites de terceiros.
+- O uso é de responsabilidade do usuário.
+- Para questões DMCA, contate os hosts reais do conteúdo.
 
 ## Licença
 
